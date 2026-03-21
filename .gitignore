@@ -1,1 +1,5 @@
 .vscode
+
+# SAT feature extractor build artifacts
+SAT-features-competition2024/obj/*.o
+SAT-features-competition2024/*~

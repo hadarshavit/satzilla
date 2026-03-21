@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <sys/times.h>
 #include <limits.h>
@@ -38,7 +39,20 @@ const int SATinstance::numBadFeats = 34;
 // == with ubcsat for now
 SATinstance *currInstanceForUBC = 0;
 
-void writeFeature(char *name, double val)
+namespace {
+bool createTempPath(char *buffer, size_t bufferSize, const char *suffixTemplate)
+{
+	if (snprintf(buffer, bufferSize, "%s%s", P_tmpdir, suffixTemplate) >= static_cast<int>(bufferSize))
+		return false;
+	int fd = mkstemp(buffer);
+	if (fd == -1)
+		return false;
+	close(fd);
+	return true;
+}
+}
+
+void writeFeature(const char *name, double val)
 {
 	currInstanceForUBC->writeFeature(name, val);
 }
@@ -58,7 +72,7 @@ SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
 			exit(1);
 		}
 
-		inputFileName = (char *)filename;
+		inputFileName = filename;
 		char chbuf;
 		char strbuf[1024];
 		infile.get(chbuf);
@@ -423,11 +437,13 @@ void SATinstance::outputAssignment()
 {
 	FILE *vlineFile;
 	vlineFilename = new char[512];
-	sprintf(vlineFilename, "%s", P_tmpdir);
-	strcat(vlineFilename, "/XXXXXX");
+	if (!createTempPath(vlineFilename, 512, "/XXXXXX"))
+	{
+		fprintf(stderr, "c Couldn't create temp file path\n");
+		delete[] vlineFilename;
+		return;
+	}
 	printf("Assignment file name: %s", vlineFilename);
-    // TODO: Replace with mkstemp or mkdtemp for file creation instead
-	vlineFilename = mktemp(vlineFilename);
 	if ((vlineFile = fopen(vlineFilename, "w")) == NULL)
 	{
 		fprintf(stderr, "c Couldn't open temp file\n");
@@ -553,13 +569,10 @@ void SATinstance::retardedSearch()
 	assert(unitClauses.size() == 0);
 }
 
-inline void p(char *in)
+inline void p(const char *in)
 {
-#ifdef DEBUG
-	printf("%s\n", in);
+	LogDebug("%s\n", in);
 	fflush(stdout);
-#else
-#endif
 }
 
 void SATinstance::start_computation(bool preprocessor_solved, float pre_time)
@@ -1730,7 +1743,7 @@ inline double SATinstance::array_entropy(int *array, int num, int vals)
 // write out node stats
 // could these stats all be computed in one pass?
 
-void SATinstance::writeStats(int *array, int num, char *name)
+void SATinstance::writeStats(int *array, int num, const char *name)
 {
 	double m = mean(array, num);
 	char buffer[100];
@@ -1746,7 +1759,7 @@ void SATinstance::writeStats(int *array, int num, char *name)
 	writeFeature(buffer, (double)array_max(array, num));
 }
 
-void SATinstance::writeStats(double *array, int num, char *name)
+void SATinstance::writeStats(double *array, int num, const char *name)
 {
 	double m = mean(array, num);
 	char buffer[100];
@@ -1762,7 +1775,7 @@ void SATinstance::writeStats(double *array, int num, char *name)
 	writeFeature(buffer, array_max(array, num));
 }
 
-void SATinstance::writeStatsSTDEV(int *array, int num, char *name)
+void SATinstance::writeStatsSTDEV(int *array, int num, const char *name)
 {
 	double m = mean(array, num);
 	char buffer[100];
@@ -1776,7 +1789,7 @@ void SATinstance::writeStatsSTDEV(int *array, int num, char *name)
 	writeFeature(buffer, (double)array_max(array, num));
 }
 
-void SATinstance::writeStatsSTDEV(double *array, int num, char *name)
+void SATinstance::writeStatsSTDEV(double *array, int num, const char *name)
 {
 	double m = mean(array, num);
 	char buffer[100];
@@ -1790,7 +1803,7 @@ void SATinstance::writeStatsSTDEV(double *array, int num, char *name)
 	writeFeature(buffer, array_max(array, num));
 }
 
-void SATinstance::writeStatsQ(double *array, int num, char *name)
+void SATinstance::writeStatsQ(double *array, int num, const char *name)
 {
 	// First sort this array
 	vector<double> vc;
@@ -1940,7 +1953,7 @@ void SATinstance::mkVarTranslation(map<int, int> *trans_for, map<int, int> *tran
 		}
 }
 
-void SATinstance::writeFeature(char *name, double val)
+void SATinstance::writeFeature(const char *name, double val)
 {
 	if (ignoreBadFeats)
 		for (int i = 0; i < numBadFeats; i++)
@@ -1962,7 +1975,7 @@ void SATinstance::writeFeature(char *name, double val)
 	// printf("feature %d: %s; val: %f\n", indexCount, name, val);
 }
 
-void SATinstance::writeFeaturesToFile(char *name)
+void SATinstance::writeFeaturesToFile(const char *name)
 {
 	FILE *f = fopen(name, "a");
 	if (f == NULL)
@@ -1985,7 +1998,7 @@ void SATinstance::writeFeaturesToFile(FILE *f)
 	fprintf(f, "%.9lf\n", featureVals[indexCount - 1]);
 }
 
-void SATinstance::writeFeatNamesToFile(char *name)
+void SATinstance::writeFeatNamesToFile(const char *name)
 {
 	FILE *f = fopen(name, "a");
 	if (f == NULL)
@@ -2209,7 +2222,7 @@ int SATinstance::sp(bool doComp)
 	double **spresult;
 	double *uncondfoo, *ratiofoo;
 	int spsize;
-	spresult = varsat::main(inputFileName, spsize, SP_TIME_LIMIT);
+	spresult = varsat::main(const_cast<char *>(inputFileName), spsize, SP_TIME_LIMIT);
 	uncondfoo = new double[spsize];
 	ratiofoo = new double[spsize];
 	for (int i = 0; i < spsize; i++)
@@ -2248,215 +2261,120 @@ int SATinstance::sp(bool doComp)
 	return 1;
 }
 
-int SATinstance::localSearchProbeGsat(char *inputfile, bool doComp)
+namespace {
+void writeReservedLocalSearchFeatures(SATinstance *sat, const char *prefix, const char *timeFeature)
 {
-	if (DEB)
-		p("c local search probe...");
+	static const char *kFeatureSuffixes[] = {
+		"BestSolution_Mean",
+		"BestSolution_CoeffVariance",
+		"FirstLocalMinStep_Mean",
+		"FirstLocalMinStep_CoeffVariance",
+		"FirstLocalMinStep_Median",
+		"FirstLocalMinStep_Q.10",
+		"FirstLocalMinStep_Q.90",
+		"BestAvgImprovement_Mean",
+		"BestAvgImprovement_CoeffVariance",
+		"FirstLocalMinRatio_Mean",
+		"FirstLocalMinRatio_CoeffVariance",
+	};
 
-	if (!doComp)
+	char featureName[128];
+	for (const char *suffix : kFeatureSuffixes)
 	{
-		writeFeature("gsat_BestSolution_Mean", RESERVED_VALUE);
-		writeFeature("gsat_BestSolution_CoeffVariance", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinStep_Mean", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinStep_CoeffVariance", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinStep_Median", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinStep_Q.10", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinStep_Q.90", RESERVED_VALUE);
-		writeFeature("gsat_BestAvgImprovement_Mean", RESERVED_VALUE);
-		writeFeature("gsat_BestAvgImprovement_CoeffVariance", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinRatio_Mean", RESERVED_VALUE);
-		writeFeature("gsat_FirstLocalMinRatio_CoeffVariance", RESERVED_VALUE);
-		writeFeature("ls-gsat-featuretime", RESERVED_VALUE);
-		return 0;
+		snprintf(featureName, sizeof(featureName), "%s_%s", prefix, suffix);
+		sat->writeFeature(featureName, RESERVED_VALUE);
 	}
-
-	//  char *featureNames[MAX_FEATURES];
-	//  double featureValues[MAX_FEATURES];
-	//  int indexCount=0;
-	char *outfile;
-
-	outfile = new char[512];
-	sprintf(outfile, "%s", P_tmpdir);
-	strcat(outfile, "/featuresXXXXXX");
-	outfile = mktemp(outfile);
-
-	//  printf("the gsat output is %s \n", outfile);
-	//  printf("the input is %s %s %s\n", inputFileName, sTimeout, sRuns);
-
-	int returnVal = -1;
-	SolverGsat->argv[9] = outfile;
-	returnVal = SolverGsat->execute(inputfile, UBCSAT_TIME_LIMIT_INT);
-
-	// now take the output from the tmp file
-
-	ifstream infile(outfile);
-	if (!infile)
-	{
-		fprintf(stderr, "c Error: could not read from outputfile %s.\n", outfile);
-		delete[] outfile;
-		SolverGsat->cleanup();
-		exit(1);
-	}
-
-	// cout << "==========================================!\n";
-	// now I can define what kind of feature I want
-	// just use the write feature function. it will be ok
-	// The problem is that we may have lots of fetures, such as 40 category.
-	// In that case, the code following could be really long
-
-	char strbuf[1024];
-	char namefoo[1024];
-	double valuefoo;
-	int writeflag;
-	while (infile)
-	{
-		writeflag = 0;
-		infile >> strbuf;
-		string string1(strbuf);
-		if (string1.find("First") == 0)
-		{
-			sprintf(namefoo, "gsat_%s", strbuf);
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atof(strbuf);
-			writeflag = 1;
-		}
-		else if (string1.find("Best") == 0)
-		{
-			sprintf(namefoo, "gsat_%s", strbuf);
-			;
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atof(strbuf);
-			writeflag = 1;
-		}
-		else if (string1.find("SuccessfulRuns"))
-		{
-			sprintf(namefoo, "gsat_%s", strbuf);
-			;
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atoi(strbuf);
-			if (valuefoo == 1)
-				solved = 3;
-		}
-		if (writeflag == 1)
-			writeFeature(namefoo, valuefoo);
-	}
-	infile.close();
-	writeFeature("ls-gsat-featuretime", gSW.TotalLap() - myTime);
-	myTime = gSW.TotalLap();
-	remove(outfile);
-
-	SolverGsat->cleanup();
-	delete[] outfile;
-
-	return FEAT_OK;
+	sat->writeFeature(timeFeature, RESERVED_VALUE);
 }
 
-int SATinstance::localSearchProbeSaps(char *inputfile, bool doComp)
+bool parseLocalSearchOutput(SATinstance *sat, const char *outputFile, const char *prefix, int solvedCode)
 {
-	if (DEB)
-		p("c local search probe...");
+	ifstream infile(outputFile);
+	if (!infile)
+		return false;
 
+	char token[1024];
+	char ignored[1024];
+	char valueToken[1024];
+	char featureName[1060];
+
+	while (infile >> token)
+	{
+		const string key(token);
+		const bool isFirst = key.find("First") == 0;
+		const bool isBest = key.find("Best") == 0;
+		const bool isSuccessfulRuns = key.find("SuccessfulRuns") == 0;
+		if (!(isFirst || isBest || isSuccessfulRuns))
+			continue;
+
+		if (!(infile >> ignored >> valueToken))
+			break;
+
+		if (isFirst || isBest)
+		{
+			snprintf(featureName, sizeof(featureName), "%s_%s", prefix, token);
+			sat->writeFeature(featureName, atof(valueToken));
+		}
+		else if (atoi(valueToken) == 1)
+		{
+			sat->solved = solvedCode;
+		}
+	}
+
+	return true;
+}
+
+int runLocalSearchProbe(SATinstance *sat,
+						const char *inputFile,
+						bool doComp,
+						BinSolver *solver,
+						const char *prefix,
+						const char *timeFeature,
+						int solvedCode)
+{
 	if (!doComp)
 	{
-		writeFeature("saps_BestSolution_Mean", RESERVED_VALUE);
-		writeFeature("saps_BestSolution_CoeffVariance", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinStep_Mean", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinStep_CoeffVariance", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinStep_Median", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinStep_Q.10", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinStep_Q.90", RESERVED_VALUE);
-		writeFeature("saps_BestAvgImprovement_Mean", RESERVED_VALUE);
-		writeFeature("saps_BestAvgImprovement_CoeffVariance", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinRatio_Mean", RESERVED_VALUE);
-		writeFeature("saps_FirstLocalMinRatio_CoeffVariance", RESERVED_VALUE);
-		writeFeature("ls-saps-featuretime", RESERVED_VALUE);
+		writeReservedLocalSearchFeatures(sat, prefix, timeFeature);
 		return 0;
 	}
-	char sTimeout[64];
-	char sRuns[64];
 
-	char *outfile;
-
-	outfile = new char[512];
-	sprintf(outfile, "%s", P_tmpdir);
-	strcat(outfile, "/featuresXXXXXX");
-	outfile = mktemp(outfile);
-
-	//  printf("the saps output is %s \n", outfile);
-	//  printf("the input is %s %s %s\n", inputFileName, sTimeout, sRuns);
-
-	int returnVal = -1;
-	SolverSaps->argv[9] = outfile;
-	returnVal = SolverSaps->execute(inputfile, UBCSAT_TIME_LIMIT_INT);
-
-	// now take the output from the tmp file
-
-	ifstream infile(outfile);
-	if (!infile)
+	char outputFile[512];
+	if (!createTempPath(outputFile, sizeof(outputFile), "/featuresXXXXXX"))
 	{
-		fprintf(stderr, "c Error: could not read from outputfile %s.\n", outfile);
-		delete[] outfile;
-		SolverSaps->cleanup();
+		fprintf(stderr, "c Error: could not create temporary output file for %s.\n", prefix);
+		return 0;
+	}
+
+	solver->argv[9] = outputFile;
+	solver->execute(inputFile, UBCSAT_TIME_LIMIT_INT);
+
+	if (!parseLocalSearchOutput(sat, outputFile, prefix, solvedCode))
+	{
+		fprintf(stderr, "c Error: could not read from outputfile %s.\n", outputFile);
+		solver->cleanup();
 		exit(1);
 	}
 
-	// cout << "==========================================!\n";
-	// now I can define what kind of feature I want
-	// just use the write feature function. it will be ok
-	// The problem is that we may have lots of fetures, such as 40 category.
-	// In that case, the code following could be really long
-
-	char strbuf[1024];
-	char namefoo[1024];
-	double valuefoo;
-	int writeflag;
-	while (infile)
-	{
-		writeflag = 0;
-		infile >> strbuf;
-		string string1(strbuf);
-		if (string1.find("First") == 0)
-		{
-			sprintf(namefoo, "saps_%s", strbuf);
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atof(strbuf);
-			writeflag = 1;
-		}
-		else if (string1.find("Best") == 0)
-		{
-			sprintf(namefoo, "saps_%s", strbuf);
-			;
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atof(strbuf);
-			writeflag = 1;
-		}
-		else if (string1.find("SuccessfulRuns"))
-		{
-			sprintf(namefoo, "gsat_%s", strbuf);
-			;
-			infile >> strbuf;
-			infile >> strbuf;
-			valuefoo = atoi(strbuf);
-			if (valuefoo == 1)
-				solved = 4;
-		}
-		if (writeflag == 1)
-			writeFeature(namefoo, valuefoo);
-	}
-	infile.close();
-	writeFeature("ls-saps-featuretime", gSW.TotalLap() - myTime);
+	sat->writeFeature(timeFeature, gSW.TotalLap() - myTime);
 	myTime = gSW.TotalLap();
-	remove(outfile);
-
-	delete[] outfile;
-	SolverSaps->cleanup();
-
+	remove(outputFile);
+	solver->cleanup();
 	return FEAT_OK;
+}
+}
+
+int SATinstance::localSearchProbeGsat(const char *inputfile, bool doComp)
+{
+	if (DEB)
+		p("c local search probe...");
+	return runLocalSearchProbe(this, inputfile, doComp, SolverGsat, "gsat", "ls-gsat-featuretime", 3);
+}
+
+int SATinstance::localSearchProbeSaps(const char *inputfile, bool doComp)
+{
+	if (DEB)
+		p("c local search probe...");
+	return runLocalSearchProbe(this, inputfile, doComp, SolverSaps, "saps", "ls-saps-featuretime", 4);
 }
 
 #undef NUM_LS_PROBE
@@ -2557,7 +2475,7 @@ void SATinstance::outputActiveFeat(bool *active)
 			printf("%s\n", featureNames[i]);
 }
 
-int SATinstance::cl_prob(char *outfile, bool doComp)
+int SATinstance::cl_prob(const char *outfile, bool doComp)
 {
 	int addClause[10000];
 	double addClauseLength[10000];

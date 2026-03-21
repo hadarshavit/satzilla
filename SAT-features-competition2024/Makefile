@@ -22,38 +22,37 @@ LIB = -l:liblpk5.a -lvarsat -ldl  -lz
 
 LIBDIRS = -Llp_solve_5.0 -LVARSAT 
 
-RELEASEFLAGS = -O5 -DDEBUG -g -lz 
-
-DEBUGFLAGS = -static -Wall -DDEBUG -g
+RELEASEFLAGS = -O3 -DDEBUG -g -std=c++17
+DEBUGFLAGS = -O0 -DDEBUG -g3 -std=c++17 -Wall -Wextra -Wpedantic
 
 SOLVERLIB =  
 
 release:
-	cd obj; make all "OBJ = ${FEATOBJ}" "CPPFLAGS = -DFEATURES ${RELEASEFLAGS} ${INCLUDE}";
-	make allfeat "VPATH = obj" "OBJ = $(FEATOBJ)" "FLAGS = -o features ${RELEASEFLAGS}"
+	cd obj; $(MAKE) all "OBJ = ${FEATOBJ}" "CPPFLAGS = -DFEATURES ${RELEASEFLAGS} ${INCLUDE}";
+	$(MAKE) allfeat "VPATH = obj" "OBJ = $(FEATOBJ)" "FLAGS = -o features ${RELEASEFLAGS}"
 
 libubcsat.a:
-	cd UBCSAT; make;
+	cd UBCSAT; $(MAKE);
 	
 libvarsat.a:
-	cd VARSAT; make;
+	cd VARSAT; $(MAKE);
 
 liblpk.a:
 	cd lp_solve_5.0/lpsolve5; ./ccc; cp liblpk5.a ../liblpk5.a
 
 
 allfeat : $(OBJ)
-	make libvarsat.a; make liblpk.a; g++  ${LIBDIRS} $^ ${FLAGS} $(LIB)
+	+$(MAKE) libvarsat.a; $(MAKE) liblpk.a; g++  ${LIBDIRS} $^ ${FLAGS} $(LIB)
 
 feature:
-	cd obj; make all "OBJ = ${FEATOBJ}" "CPPFLAGS = -DFEATURES ${RELEASEFLAGS} ${INCLUDE}";
-	make allfeat "VPATH = obj" "OBJ = $(FEATOBJ)" "FLAGS = -o features ${RELEASEFLAGS}"
+	cd obj; $(MAKE) all "OBJ = ${FEATOBJ}" "CPPFLAGS = -DFEATURES ${RELEASEFLAGS} ${INCLUDE}";
+	$(MAKE) allfeat "VPATH = obj" "OBJ = $(FEATOBJ)" "FLAGS = -o features ${RELEASEFLAGS}"
 
 
 .PHONY: clean depend again
 
 clean-all:
-	rm -f obj/*.o features;  cd VARSAT; make clean ; cd ../lp_solve_5.0;  make clean
+	rm -f obj/*.o features;  cd VARSAT; $(MAKE) clean ; cd ../lp_solve_5.0;  $(MAKE) clean
 
 clean:
 	rm -f obj/*.o features
@@ -63,4 +62,4 @@ depend:
 	makedepend -Y -fdebugobj/Makefile *.cc *.cpp >& /dev/null
 
 again:
-	make clean; make depend; make
+	$(MAKE) clean; $(MAKE) depend; $(MAKE)

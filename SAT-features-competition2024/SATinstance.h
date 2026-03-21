@@ -122,11 +122,11 @@ private:
 
   // write out node stats
   // could these stats all be computed in one pass?
-  void writeStats(int *array, int num, char *name);
-  void writeStatsQ(double *array, int num, char *name);
-  void writeStats(double *array, int num, char *name);
-  void writeStatsSTDEV(int *array, int num, char *name);
-  void writeStatsSTDEV(double *array, int num, char *name);
+  void writeStats(int *array, int num, const char *name);
+  void writeStatsQ(double *array, int num, const char *name);
+  void writeStats(double *array, int num, const char *name);
+  void writeStatsSTDEV(int *array, int num, const char *name);
+  void writeStatsSTDEV(double *array, int num, const char *name);
 
   char *featureNames[MAX_FEATURES]; // list of all feature names
   int indexCount;                   // count of how many features we currently have (built up using writeFeature() )
@@ -143,7 +143,7 @@ private:
 
   void mkVarTranslation(map<int, int> *trans_for, map<int, int> *trans_back);
 
-  char *inputFileName;
+  const char *inputFileName;
 
 public:
   SATinstance(const char *filename, bool doComp, long seed = 0);
@@ -153,11 +153,11 @@ public:
   void clauseGraphFeatures(bool realCC);
   int sp(bool doComp);
   int compute_lp(bool doComp);
-  int cl_prob(char *outfile, bool doComp);
+  int cl_prob(const char *outfile, bool doComp);
   int init_diameter(bool doComp);
   int unitPropProbe(bool haltOnAssignment, bool doComp);
-  int localSearchProbeSaps(char *outfile, bool doComp);
-  int localSearchProbeGsat(char *outfile, bool doComp);
+  int localSearchProbeSaps(const char *outfile, bool doComp);
+  int localSearchProbeGsat(const char *outfile, bool doComp);
   int lobjoisProbe(bool haltOnAssignment, bool doComp);
 
   inline double *getFeatureVals() { return featureVals; }
@@ -168,12 +168,12 @@ public:
 
   inline int getNumFeatures() { return indexCount; }
 
-  void writeFeature(char *name, double val);
+  void writeFeature(const char *name, double val);
 
-  void writeFeaturesToFile(char *name); // write comma separated features to passed file
+  void writeFeaturesToFile(const char *name); // write comma separated features to passed file
   void writeFeaturesToFile(FILE *f);
 
-  void writeFeatNamesToFile(char *name); // write comma separated feature names to passed file
+  void writeFeatNamesToFile(const char *name); // write comma separated feature names to passed file
   void writeFeatNamesToFile(FILE *f);
 
   void outputActiveFeat(bool *active);

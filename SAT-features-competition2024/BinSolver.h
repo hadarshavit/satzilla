@@ -6,7 +6,7 @@ class BinSolver
 public:
   const char* name; //Solver name
   int argc; // number of arguments
-  char** argv;
+  const char** argv;
   int inputFileParam;
 
   char outFileName[512];
@@ -17,9 +17,9 @@ public:
   BinSolver(const char* _name, int _argc, int _inputFileParam);
   ~BinSolver();
 
-  int spawnBinary(char* binFile, char* argv[], char* outFileName, int timeout);
+  int spawnBinary(const char* binFile, const char* const argv[], const char* outFileName, int timeout);
 
-  virtual int execute(char* inputFile, int timeout);
+  virtual int execute(const char* inputFile, int timeout);
   virtual void cleanup();
 };
 
@@ -31,7 +31,7 @@ extern BinSolver* SolverZchaff;
 extern BinSolver* SolverSatelite;
 
 
-void BuildSolvers(char* strseed, char* outfile);
+void BuildSolvers(const char* strseed, const char* outfile);
 
 
 #endif

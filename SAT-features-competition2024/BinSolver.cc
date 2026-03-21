@@ -18,7 +18,7 @@ BinSolver::BinSolver(const char *_name, int _argc, int _inputFileParam)
       inputFileParam(_inputFileParam),
       name(_name)
 {
-  argv = new char *[argc + 1];
+  argv = new const char *[argc + 1];
 }
 
 BinSolver::~BinSolver()
@@ -57,7 +57,7 @@ bool BinSolver::writeBinaryFile(char* nameBuf, const unsigned char* data, int le
   return true;
 }
 */
-int BinSolver::spawnBinary(char *binFile, char *argv[], char *outFileName, int timeout)
+int BinSolver::spawnBinary(const char *binFile, const char *const argv[], const char *outFileName, int timeout)
 {
   // -- check timeout
   if (timeout == -1)
@@ -123,7 +123,11 @@ int BinSolver::spawnBinary(char *binFile, char *argv[], char *outFileName, int t
     printf("c child timeout set to %d\n", timeout);
 
     // -- finally, execute
-    execv(binFile, argv);
+    char **execArgv = new char *[argc + 1];
+    for (int i = 0; i < argc; ++i)
+      execArgv[i] = const_cast<char *>(argv[i]);
+    execArgv[argc] = nullptr;
+    execv(const_cast<char *>(binFile), execArgv);
     perror("Exec");
     exit(123);
   }
@@ -131,7 +135,7 @@ int BinSolver::spawnBinary(char *binFile, char *argv[], char *outFileName, int t
   return 123;
 }
 
-int BinSolver::execute(char *inputFile, int timeout)
+int BinSolver::execute(const char *inputFile, int timeout)
 {
   if (DEB)
     printf("c Bin: Executing %s\n", name);
@@ -141,15 +145,18 @@ int BinSolver::execute(char *inputFile, int timeout)
     return -1;
   */
   // -- Create outfile
-  sprintf(outFileName, "%s", P_tmpdir);
-  strcat(outFileName, "/outputXXXXXX");
-  mkstemp(outFileName);
+  snprintf(outFileName, sizeof(outFileName), "%s/outputXXXXXX", P_tmpdir);
+  int fd = mkstemp(outFileName);
+  if (fd == -1)
+  {
+    perror("mkstemp failed for solver output file");
+    return 123;
+  }
+  close(fd);
   outFileCreated = true;
 
   // -- execute!
-  strcpy(solverName, mypath);
-  strcat(solverName, "/satzilla_Solvers/");
-  strcat(solverName, name);
+  snprintf(solverName, sizeof(solverName), "%s/satzilla_Solvers/%s", mypath, name);
   // printf("c Bin: Executing %s\n", solverName);
   argv[inputFileParam] = inputFile;
   argv[0] = solverName;
