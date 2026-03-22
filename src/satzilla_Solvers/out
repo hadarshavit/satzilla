@@ -1,0 +1,17 @@
+
+
+BestSolution_Mean = 2151.5
+BestSolution_CoeffVariance = 0.0667135308541
+FirstLocalMinStep_Mean = 19123.7
+FirstLocalMinStep_CoeffVariance = 0.00537800205029
+FirstLocalMinStep_Median = 19159.5
+FirstLocalMinStep_Q.10 = 18871
+FirstLocalMinStep_Q.90 = 19201
+BestAvgImprovement_Mean = 0.63046249781
+BestAvgImprovement_CoeffVariance = 0.168727935973
+FirstLocalMinRatio_Mean = 0.892689448924
+FirstLocalMinRatio_CoeffVariance = 0.00309376829386
+EstACL_Mean = 228138913.529
+SuccessfulRuns = 0
+
+

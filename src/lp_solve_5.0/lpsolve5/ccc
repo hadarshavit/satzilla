@@ -1,0 +1,24 @@
+src='../lp_MDO.c ../commonlib.c ../fortify.c ../colamd/colamd.c ../lp_rlp.c ../lp_crash.c ../lp_etaPFI.c ../lp_Hash.c ../lp_lib.c ../lp_wlp.c ../lp_rlpt.c ../lp_matrix.c ../lp_mipbb.c ../lp_MPS.c ../lp_presolve.c ../lp_price.c ../lp_pricePSE.c ../lp_report.c ../lp_scale.c ../lp_simplex.c ../lp_SOS.c ../lp_utils.c ../lp_wlpt.c ../yacc_read.c'
+c=cc
+
+def=
+so=
+if [ "$PLATFORM" = "SCO_UNIX" ]
+then def='-DLoadInverseLib=0 -DLoadLanguageLib=0 -D__HYPER=long'
+else dl=-ldl
+     so=y
+fi
+
+opts='-O3'
+
+$c -s -c -I.. -I../colamd $opts $def -DYY_NEVER_INTERACTIVE -DPARSER_CPLEX -DPARSER_LP $src
+ar rv liblpk5.a `echo $src|sed s/[.]c/.o/g|sed 's/[^ ]*\///g'`
+ranlib liblpk5.a
+
+if [ "$so" != "" ]
+then
+  $c -fpic -g -c -I.. -I../colamd -I. $opts -DYY_NEVER_INTERACTIVE -DPARSER_CPLEX -DPARSER_LP $src
+  $c -shared -Wl,-soname,liblpk5.so -o liblpk5.so `echo $src|sed s/[.]c/.o/g|sed 's/[^ ]*\///g'` -lc
+fi
+
+rm *.o 2>/dev/null

@@ -1,0 +1,2 @@
+- Versie nummer in lpsolve.rc goed zetten
+- Versie nummer in help files goed zetten

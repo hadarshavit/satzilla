@@ -1,0 +1,11 @@
+VPATH = ..
+
+all : ${OBJ}
+# DO NOT DELETE
+
+BinSolver.o: BinSolver.h SATmodel.h global.h stopwatch.h
+BuildSolvers.o: BinSolver.h SATmodel.h global.h stopwatch.h model.h
+features.o: SATinstance.h SATmodel.h BinSolver.o BuildSolvers.o
+SATinstance.o: SATinstance.h SATmodel.h global.h stopwatch.h
+stopwatch.o: stopwatch.h
+
