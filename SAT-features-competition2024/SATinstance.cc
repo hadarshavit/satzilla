@@ -12,6 +12,10 @@
 
 #include <set>
 #include <map>
+#include <queue>
+#include <limits>
+#include <numeric>
+#include <unordered_map>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -19,6 +23,7 @@
 #include <cstring>
 #include <vector>
 #include <cassert>
+#include <stdexcept>
 #include "lp_solve_5.0/lpkit.h"
 #include "lp_solve_5.0/patchlevel.h"
 #include "stopwatch.h"
@@ -50,6 +55,597 @@ bool createTempPath(char *buffer, size_t bufferSize, const char *suffixTemplate)
 	close(fd);
 	return true;
 }
+
+struct TranslatedFormula
+{
+	std::vector<std::vector<int> > clauses;
+	std::vector<int> clauseLiteralOccurrences;
+	std::vector<int> literalOccurrences;
+	int numVars = 0;
+};
+
+struct SequenceStats
+{
+	double min = 0.0;
+	double max = 0.0;
+	double mode = 0.0;
+	double mean = 0.0;
+	double stddev = 0.0;
+	double zeros = 0.0;
+	double entropy = 0.0;
+	double q1 = 0.0;
+	double q2 = 0.0;
+	double q3 = 0.0;
+	double valRate = 0.0;
+};
+
+struct EdgeKey
+{
+	int a;
+	int b;
+
+	EdgeKey(int lhs = 0, int rhs = 0)
+	{
+		if (lhs <= rhs)
+		{
+			a = lhs;
+			b = rhs;
+		}
+		else
+		{
+			a = rhs;
+			b = lhs;
+		}
+	}
+
+	bool operator<(const EdgeKey &other) const
+	{
+		if (a != other.a)
+			return a < other.a;
+		return b < other.b;
+	}
+};
+
+struct DirectedEdgeKey
+{
+	int from;
+	int to;
+
+	DirectedEdgeKey(int lhs = 0, int rhs = 0)
+		: from(lhs), to(rhs)
+	{
+	}
+
+	bool operator<(const DirectedEdgeKey &other) const
+	{
+		if (from != other.from)
+			return from < other.from;
+		return to < other.to;
+	}
+};
+
+double quantileCunnane(const std::vector<double> &sortedValues, double probability)
+{
+	if (sortedValues.empty())
+		return 0.0;
+	if (sortedValues.size() == 1)
+		return sortedValues[0];
+
+	const double alphap = 0.4;
+	const double betap = 0.4;
+	const double aleph = sortedValues.size() * probability + alphap + probability * (1.0 - alphap - betap);
+	const long j = static_cast<long>(floor(aleph));
+	const double gamma = aleph - static_cast<double>(j);
+
+	if (j <= 0)
+		return sortedValues.front();
+	if (static_cast<size_t>(j) >= sortedValues.size())
+		return sortedValues.back();
+
+	return (1.0 - gamma) * sortedValues[j - 1] + gamma * sortedValues[j];
+}
+
+SequenceStats computeSequenceStats(const std::vector<double> &values)
+{
+	SequenceStats stats;
+	stats.zeros = 0.0;
+
+	std::vector<double> normalized;
+	normalized.reserve(values.size());
+	for (size_t i = 0; i < values.size(); ++i)
+	{
+		if (fabs(values[i]) < EPSILON)
+			stats.zeros += 1.0;
+		else
+			normalized.push_back(values[i]);
+	}
+
+	if (normalized.empty())
+		normalized.push_back(0.0);
+
+	sort(normalized.begin(), normalized.end());
+
+	stats.min = normalized.front();
+	stats.max = normalized.back();
+	stats.mean = std::accumulate(normalized.begin(), normalized.end(), 0.0) / static_cast<double>(normalized.size());
+
+	double variance = 0.0;
+	for (size_t i = 0; i < normalized.size(); ++i)
+		variance += (normalized[i] - stats.mean) * (normalized[i] - stats.mean);
+	stats.stddev = sqrt(variance / static_cast<double>(normalized.size()));
+
+	size_t bestCount = 0;
+	size_t distinctCount = 0;
+	size_t runCount = 0;
+	double currentValue = normalized.front();
+	for (size_t i = 0; i < normalized.size(); ++i)
+	{
+		if (i == 0 || fabs(normalized[i] - currentValue) < EPSILON)
+		{
+			runCount++;
+		}
+		else
+		{
+			distinctCount++;
+			if (runCount > bestCount)
+			{
+				bestCount = runCount;
+				stats.mode = currentValue;
+			}
+			currentValue = normalized[i];
+			runCount = 1;
+		}
+	}
+	distinctCount++;
+	if (runCount > bestCount)
+	{
+		bestCount = runCount;
+		stats.mode = currentValue;
+	}
+
+	double sumLogCounts = 0.0;
+	runCount = 0;
+	currentValue = normalized.front();
+	for (size_t i = 0; i < normalized.size(); ++i)
+	{
+		if (i == 0 || fabs(normalized[i] - currentValue) < EPSILON)
+		{
+			runCount++;
+		}
+		else
+		{
+			sumLogCounts += static_cast<double>(runCount) * log(static_cast<double>(runCount));
+			currentValue = normalized[i];
+			runCount = 1;
+		}
+	}
+	sumLogCounts += static_cast<double>(runCount) * log(static_cast<double>(runCount));
+
+	const double sequenceSize = static_cast<double>(normalized.size());
+	stats.entropy = log(sequenceSize) - (sumLogCounts / sequenceSize);
+	stats.q1 = quantileCunnane(normalized, 0.25);
+	stats.q2 = quantileCunnane(normalized, 0.50);
+	stats.q3 = quantileCunnane(normalized, 0.75);
+	stats.valRate = static_cast<double>(distinctCount) / sequenceSize;
+	return stats;
+}
+
+void writeSequenceStats(SATinstance *sat, const std::string &prefix, const std::vector<double> &values)
+{
+	const SequenceStats stats = computeSequenceStats(values);
+	sat->writeFeature((prefix + "min").c_str(), stats.min);
+	sat->writeFeature((prefix + "max").c_str(), stats.max);
+	sat->writeFeature((prefix + "mode").c_str(), stats.mode);
+	sat->writeFeature((prefix + "mean").c_str(), stats.mean);
+	sat->writeFeature((prefix + "std").c_str(), stats.stddev);
+	sat->writeFeature((prefix + "zeros").c_str(), stats.zeros);
+	sat->writeFeature((prefix + "entropy").c_str(), stats.entropy);
+	sat->writeFeature((prefix + "q1").c_str(), stats.q1);
+	sat->writeFeature((prefix + "q2").c_str(), stats.q2);
+	sat->writeFeature((prefix + "q3").c_str(), stats.q3);
+	sat->writeFeature((prefix + "val_rate").c_str(), stats.valRate);
+}
+
+void writeReservedSequenceStats(SATinstance *sat, const std::string &prefix)
+{
+	static const char *kSuffixes[] = {
+		"min", "max", "mode", "mean", "std", "zeros", "entropy", "q1", "q2", "q3", "val_rate"};
+	for (size_t i = 0; i < sizeof(kSuffixes) / sizeof(kSuffixes[0]); ++i)
+		sat->writeFeature((prefix + kSuffixes[i]).c_str(), RESERVED_VALUE);
+}
+
+void writeMantheyGraphFeatures(SATinstance *sat,
+							   const std::string &graphPrefix,
+							   const std::vector<double> &nodeDegrees,
+							   const std::vector<double> &weights)
+{
+	writeSequenceStats(sat, graphPrefix + "node_", nodeDegrees);
+	writeSequenceStats(sat, graphPrefix + "weights_", weights.empty() ? std::vector<double>(1, 0.0) : weights);
+}
+
+void writeReservedMantheyGraphFeatures(SATinstance *sat, const std::string &graphPrefix)
+{
+	writeReservedSequenceStats(sat, graphPrefix + "node_");
+	writeReservedSequenceStats(sat, graphPrefix + "weights_");
+}
+
+int literalNodeIndex(int literal, int numVars)
+{
+	if (literal > 0)
+		return literal;
+	return numVars + (-literal);
+}
+
+std::vector<std::vector<int> > initUndirectedAdjacency(int nodeCount)
+{
+	return std::vector<std::vector<int> >(nodeCount + 1);
+}
+
+void finalizeUndirectedAdjacency(std::vector<std::vector<int> > &adjacency)
+{
+	for (size_t i = 1; i < adjacency.size(); ++i)
+	{
+		sort(adjacency[i].begin(), adjacency[i].end());
+		adjacency[i].erase(unique(adjacency[i].begin(), adjacency[i].end()), adjacency[i].end());
+	}
+}
+
+std::vector<double> nodeDegreesFromUndirected(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+{
+	std::vector<double> degrees(nodeCount, 0.0);
+	for (int node = 1; node <= nodeCount; ++node)
+		degrees[node - 1] = static_cast<double>(adjacency[node].size());
+	return degrees;
+}
+
+std::vector<double> doubledUndirectedWeights(const std::map<EdgeKey, double> &weights)
+{
+	std::vector<double> values;
+	values.reserve(weights.size() * 2);
+	for (std::map<EdgeKey, double>::const_iterator it = weights.begin(); it != weights.end(); ++it)
+	{
+		values.push_back(it->second);
+		values.push_back(it->second);
+	}
+	return values;
+}
+
+std::vector<double> directedOutDegrees(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+{
+	std::vector<double> degrees(nodeCount, 0.0);
+	for (int node = 1; node <= nodeCount; ++node)
+		degrees[node - 1] = static_cast<double>(adjacency[node].size());
+	return degrees;
+}
+
+std::vector<double> directedWeights(const std::map<DirectedEdgeKey, double> &weights)
+{
+	std::vector<double> values;
+	values.reserve(weights.size());
+	for (std::map<DirectedEdgeKey, double>::const_iterator it = weights.begin(); it != weights.end(); ++it)
+		values.push_back(it->second);
+	return values;
+}
+
+std::vector<int> bfsWithinRadius(const std::vector<std::vector<int> > &adjacency, int start, int radius)
+{
+	std::vector<int> nodes;
+	std::vector<int> distance(adjacency.size(), -1);
+	std::queue<int> pending;
+	pending.push(start);
+	distance[start] = 0;
+
+	while (!pending.empty())
+	{
+		const int node = pending.front();
+		pending.pop();
+		nodes.push_back(node);
+		if (distance[node] == radius)
+			continue;
+		for (size_t i = 0; i < adjacency[node].size(); ++i)
+		{
+			const int neighbor = adjacency[node][i];
+			if (distance[neighbor] != -1)
+				continue;
+			distance[neighbor] = distance[node] + 1;
+			pending.push(neighbor);
+		}
+	}
+
+	return nodes;
+}
+
+double regressionSlope(const std::vector<double> &xs, const std::vector<double> &ys)
+{
+	if (xs.empty() || xs.size() != ys.size())
+		return 1.0;
+
+	const double sx = std::accumulate(xs.begin(), xs.end(), 0.0);
+	const double sy = std::accumulate(ys.begin(), ys.end(), 0.0);
+	double sxx = 0.0;
+	double sxy = 0.0;
+	for (size_t i = 0; i < xs.size(); ++i)
+	{
+		sxx += xs[i] * xs[i];
+		sxy += xs[i] * ys[i];
+	}
+
+	const double denom = sx * sx - static_cast<double>(xs.size()) * sxx;
+	if (fabs(denom) < EPSILON)
+		return 1.0;
+	return (sx * sy - static_cast<double>(xs.size()) * sxy) / denom;
+}
+
+double powerLawC(int x, int xmin, double alpha)
+{
+	const int maxIterations = 10000;
+	double num = 0.0;
+	double den = 0.0;
+	int i = xmin;
+
+	if (xmin < 25)
+	{
+		while (i < x)
+		{
+			den += pow(static_cast<double>(i), alpha);
+			++i;
+		}
+
+		double pOld = -2.0;
+		double p = -1.0;
+		int iterations = 0;
+		while (fabs(p - pOld) > 1e-8 && iterations < maxIterations)
+		{
+			den += pow(static_cast<double>(i), alpha);
+			num += pow(static_cast<double>(i), alpha);
+			++i;
+			++iterations;
+			pOld = p;
+			p = num / den;
+		}
+
+		if (iterations < maxIterations)
+			return p;
+	}
+
+	return pow(static_cast<double>(x) / static_cast<double>(xmin), alpha + 1.0);
+}
+
+double mostLikelyAlpha(const std::vector<int> &x,
+					   const std::vector<double> &y,
+					   const std::vector<double> &syLogX,
+					   const std::vector<double> &syX,
+					   int maxXmin = 10)
+{
+	double bestAlpha = 0.0;
+	double bestDiff = 1.0;
+	const int n = static_cast<int>(x.size());
+
+	for (int ind = 1; ind <= maxXmin; ++ind)
+	{
+		if (ind >= n - 3)
+			continue;
+
+		const int xmin = x[ind];
+		const double alpha = -1.0 - (1.0 / ((syLogX[ind] / y[ind]) - log(static_cast<double>(xmin) - 0.5)));
+		double worstDiff = -1.0;
+
+		for (int j = ind + 1; j < n; ++j)
+		{
+			const double diff = fabs(y[j] / y[ind] - powerLawC(x[j], xmin, alpha));
+			if (diff >= bestDiff)
+			{
+				worstDiff = diff;
+				break;
+			}
+			worstDiff = MAX(worstDiff, diff);
+		}
+
+		for (int j = ind; j < n - 1; ++j)
+		{
+			if (x[j] + 1 >= x[j + 1])
+				continue;
+			const double diff = fabs(y[j + 1] / y[ind] - powerLawC(x[j] + 1, xmin, alpha));
+			if (diff >= bestDiff)
+			{
+				worstDiff = diff;
+				break;
+			}
+			worstDiff = MAX(worstDiff, diff);
+		}
+
+		if (worstDiff < bestDiff)
+		{
+			bestDiff = worstDiff;
+			bestAlpha = alpha;
+		}
+	}
+
+	return -bestAlpha;
+}
+
+int countConnectedComponents(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+{
+	std::vector<bool> visited(nodeCount + 1, false);
+	int componentCount = 0;
+	for (int node = 1; node <= nodeCount; ++node)
+	{
+		if (visited[node])
+			continue;
+		componentCount++;
+		std::queue<int> pending;
+		pending.push(node);
+		visited[node] = true;
+		while (!pending.empty())
+		{
+			const int current = pending.front();
+			pending.pop();
+			for (size_t i = 0; i < adjacency[current].size(); ++i)
+			{
+				const int neighbor = adjacency[current][i];
+				if (visited[neighbor])
+					continue;
+				visited[neighbor] = true;
+				pending.push(neighbor);
+			}
+		}
+	}
+	return componentCount;
+}
+
+std::vector<int> burningByNodeDegree(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+{
+	std::vector<int> coverCounts(nodeCount, 0);
+	if (nodeCount <= 1)
+		return coverCounts;
+
+	coverCounts[1] = nodeCount;
+	std::vector<std::pair<int, int> > nodeDegrees;
+	nodeDegrees.reserve(nodeCount);
+	for (int node = 1; node <= nodeCount; ++node)
+		nodeDegrees.push_back(std::make_pair(node, static_cast<int>(adjacency[node].size())));
+	sort(nodeDegrees.begin(), nodeDegrees.end(), [](const std::pair<int, int> &lhs, const std::pair<int, int> &rhs) {
+		if (lhs.second != rhs.second)
+			return lhs.second > rhs.second;
+		return lhs.first < rhs.first;
+	});
+
+	const int componentCount = countConnectedComponents(adjacency, nodeCount);
+	const int maxRadius = MIN(16, nodeCount - 1);
+	for (int radius = 1; radius <= maxRadius; ++radius)
+	{
+		if (coverCounts[radius - 1] <= componentCount)
+			continue;
+
+		std::vector<bool> burned(nodeCount + 1, false);
+		int circles = 0;
+		while (true)
+		{
+			int centre = 0;
+			for (size_t i = 0; i < nodeDegrees.size(); ++i)
+			{
+				if (!burned[nodeDegrees[i].first])
+				{
+					centre = nodeDegrees[i].first;
+					break;
+				}
+			}
+			if (centre == 0)
+				break;
+
+			const std::vector<int> covered = bfsWithinRadius(adjacency, centre, radius - 1);
+			for (size_t i = 0; i < covered.size(); ++i)
+				burned[covered[i]] = true;
+			circles++;
+		}
+		coverCounts[radius] = circles;
+	}
+
+	return coverCounts;
+}
+
+double fractalSlope(const std::vector<int> &coverCounts)
+{
+	std::vector<double> xs;
+	std::vector<double> ys;
+	for (size_t i = 0; i < coverCounts.size(); ++i)
+	{
+		if (coverCounts[i] <= 0)
+			continue;
+		xs.push_back(log(static_cast<double>(xs.size() + 1)));
+		ys.push_back(log(static_cast<double>(coverCounts[i])));
+	}
+	if (xs.empty())
+		return 0.0;
+	return -regressionSlope(xs, ys);
+}
+
+double modularityFromPartition(const std::vector<std::map<int, double> > &adjacency,
+							   const std::vector<int> &community,
+							   const std::vector<double> &nodeWeights,
+							   double totalWeightTwice)
+{
+	if (totalWeightTwice <= 0.0)
+		return 0.0;
+
+	std::map<int, double> internal;
+	std::map<int, double> totals;
+	for (size_t node = 1; node < adjacency.size(); ++node)
+	{
+		const int comm = community[node];
+		totals[comm] += nodeWeights[node];
+		for (std::map<int, double>::const_iterator it = adjacency[node].begin(); it != adjacency[node].end(); ++it)
+		{
+			if (community[it->first] == comm)
+				internal[comm] += it->second;
+		}
+	}
+
+	double modularity = 0.0;
+	for (std::map<int, double>::const_iterator it = totals.begin(); it != totals.end(); ++it)
+	{
+		const double inWeight = internal[it->first] / totalWeightTwice;
+		const double total = it->second / totalWeightTwice;
+		modularity += inWeight - total * total;
+	}
+	return modularity;
+}
+
+double approximateLouvainModularity(const std::vector<std::map<int, double> > &adjacency, int nodeCount)
+{
+	std::vector<double> nodeWeights(nodeCount + 1, 0.0);
+	double totalWeightTwice = 0.0;
+	for (int node = 1; node <= nodeCount; ++node)
+	{
+		for (std::map<int, double>::const_iterator it = adjacency[node].begin(); it != adjacency[node].end(); ++it)
+			nodeWeights[node] += it->second;
+		totalWeightTwice += nodeWeights[node];
+	}
+	if (totalWeightTwice <= 0.0)
+		return 0.0;
+
+	std::vector<int> community(nodeCount + 1, 0);
+	std::vector<double> communityTotals(nodeCount + 1, 0.0);
+	for (int node = 1; node <= nodeCount; ++node)
+	{
+		community[node] = node;
+		communityTotals[node] = nodeWeights[node];
+	}
+
+	bool changed = true;
+	while (changed)
+	{
+		changed = false;
+		for (int node = 1; node <= nodeCount; ++node)
+		{
+			std::map<int, double> weightsToCommunity;
+			for (std::map<int, double>::const_iterator it = adjacency[node].begin(); it != adjacency[node].end(); ++it)
+				weightsToCommunity[community[it->first]] += it->second;
+
+			const int currentCommunity = community[node];
+			communityTotals[currentCommunity] -= nodeWeights[node];
+
+			int bestCommunity = currentCommunity;
+			double bestGain = 0.0;
+			for (std::map<int, double>::const_iterator it = weightsToCommunity.begin(); it != weightsToCommunity.end(); ++it)
+			{
+				const double gain = it->second - (nodeWeights[node] * communityTotals[it->first] / totalWeightTwice);
+				if (gain > bestGain + 1e-12)
+				{
+					bestGain = gain;
+					bestCommunity = it->first;
+				}
+			}
+
+			community[node] = bestCommunity;
+			communityTotals[bestCommunity] += nodeWeights[node];
+			if (bestCommunity != currentCommunity)
+				changed = true;
+		}
+	}
+
+	return modularityFromPartition(adjacency, community, nodeWeights, totalWeightTwice);
+}
 }
 
 void writeFeature(const char *name, double val)
@@ -58,8 +654,44 @@ void writeFeature(const char *name, double val)
 }
 
 SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
-	: ignoreBadFeats(false),
-	  seed(_seed)
+	: numVars(0),
+	  numClauses(0),
+	  clauses(nullptr),
+	  negClausesWithVar(nullptr),
+	  posClausesWithVar(nullptr),
+	  varStates(nullptr),
+	  clauseStates(nullptr),
+	  numActiveVars(0),
+	  numActiveClauses(0),
+	  numActiveClausesWithVar(nullptr),
+	  numBinClausesWithVar(nullptr),
+	  clauseLengths(nullptr),
+	  active_clause(nullptr),
+	  currentClause(0),
+	  currentLit(0),
+	  currentLit2(0),
+	  currentClauseForLitIter(nullptr),
+	  currentClauseForLitIter2(nullptr),
+	  currentClauseWithVar(0),
+	  currentVarForClauseIter(0),
+	  posClauses(false),
+	  dia_clause_table(nullptr),
+	  dstack(nullptr),
+	  var_depth(nullptr),
+	  clause_stamps(nullptr),
+	  CCS(0),
+	  dia_clause_list(nullptr),
+	  featureNames{},
+	  indexCount(0),
+	  featureVals{},
+	  cgTimeout(false),
+	  test_flag(nullptr),
+	  lp_return_val(0),
+	  inputFileName(filename),
+	  ignoreBadFeats(false),
+	  vlineFilename(nullptr),
+	  seed(_seed),
+	  solved(false)
 {
 	currInstanceForUBC = this;
 
@@ -69,7 +701,7 @@ SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
 		if (!infile)
 		{
 			fprintf(stderr, "c Error: Could not read from input file %s.\n", filename);
-			exit(1);
+			throw std::runtime_error(std::string("Could not read from input file ") + filename);
 		}
 
 		inputFileName = filename;
@@ -84,7 +716,7 @@ SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
 			if (!infile)
 			{
 				fprintf(stderr, "c ERROR: Premature EOF reached in %s\n", filename);
-				exit(1);
+				throw std::runtime_error(std::string("Premature EOF reached in ") + filename);
 			}
 		}
 
@@ -92,7 +724,7 @@ SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
 		if (strcmp(strbuf, "cnf") != 0)
 		{
 			fprintf(stderr, "c Error: Can only understand cnf format!\n");
-			exit(1);
+			throw std::runtime_error("Can only understand cnf format");
 		}
 		// == TODO: During parsing should really skip comment lines....
 		// == TODO: Parser should really check for EOF
@@ -127,7 +759,7 @@ SATinstance::SATinstance(const char *filename, bool doComp, long _seed)
 			if (!infile)
 			{
 				fprintf(stderr, "c ERROR: Premature EOF reached in %s\n", filename);
-				exit(1);
+				throw std::runtime_error(std::string("Premature EOF reached in ") + filename);
 			}
 
 			infile >> lits[numLits];
@@ -1717,7 +2349,7 @@ inline double SATinstance::array_entropy(int *array, int num, int vals)
 		if (array[t] < 0 || array[t] >= vals)
 		{
 			printf("c ERROR: bad array indexing in array_entropy!");
-			exit(1);
+			throw std::runtime_error("Bad array indexing in array_entropy");
 		}
 #endif
 		p[array[t]]++;
@@ -1953,6 +2585,598 @@ void SATinstance::mkVarTranslation(map<int, int> *trans_for, map<int, int> *tran
 		}
 }
 
+void SATinstance::buildTranslatedActiveClauses(std::vector<std::vector<int> > &translatedClauses,
+											   int &translatedVarCount,
+											   std::vector<int> &literalOccurrences,
+											   std::vector<int> &clauseLiteralOccurrences)
+{
+	map<int, int> transFor;
+	map<int, int> transBack;
+	mkVarTranslation(&transFor, &transBack);
+
+	translatedVarCount = static_cast<int>(transFor.size());
+	translatedClauses.clear();
+	clauseLiteralOccurrences.clear();
+	literalOccurrences.assign(2 * translatedVarCount + 1, 0);
+
+	for (int clauseNum = 0; clauseNum < numClauses; clauseNum++)
+	{
+		if (clauseStates[clauseNum] != ACTIVE)
+			continue;
+
+		std::vector<int> translatedClause;
+		for (int litNum = 0; litNum < clauseLengths[clauseNum]; litNum++)
+		{
+			const int literal = clauses[clauseNum][litNum];
+			if (literal == 0 || varStates[ABS(literal)] != UNASSIGNED)
+				continue;
+
+			const map<int, int>::const_iterator translatedVar = transFor.find(ABS(literal));
+			if (translatedVar == transFor.end())
+				continue;
+
+			const int translatedIndex = translatedVar->second + 1;
+			const int translatedLiteral = positive(literal) ? translatedIndex : -translatedIndex;
+			translatedClause.push_back(translatedLiteral);
+
+			const int literalIndex = translatedLiteral > 0 ? translatedLiteral : translatedVarCount + (-translatedLiteral);
+			literalOccurrences[literalIndex]++;
+		}
+
+		if (!translatedClause.empty())
+		{
+			translatedClauses.push_back(translatedClause);
+			clauseLiteralOccurrences.push_back(static_cast<int>(translatedClause.size()));
+		}
+	}
+}
+
+int SATinstance::structureFeatures(bool doComp)
+{
+	if (!doComp)
+	{
+		writeFeature("vig_modularty", RESERVED_VALUE);
+		writeFeature("vig_d_poly", RESERVED_VALUE);
+		writeFeature("cvig_db_poly", RESERVED_VALUE);
+		writeFeature("variable_alpha", RESERVED_VALUE);
+		writeFeature("structure-featuretime", RESERVED_VALUE);
+		return 0;
+	}
+
+	std::vector<std::vector<int> > clausesVec;
+	std::vector<int> literalOccurrences;
+	std::vector<int> clauseLiteralOccurrences;
+	int translatedVarCount = 0;
+	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+
+	if (translatedVarCount == 0 || clausesVec.empty())
+	{
+		writeFeature("vig_modularty", 0.0);
+		writeFeature("vig_d_poly", 0.0);
+		writeFeature("cvig_db_poly", 0.0);
+		writeFeature("variable_alpha", 0.0);
+		writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return 0;
+	}
+
+	std::vector<int> variableCount(translatedVarCount + 1, 0);
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+		for (size_t litIdx = 0; litIdx < clausesVec[clauseIdx].size(); ++litIdx)
+			variableCount[ABS(clausesVec[clauseIdx][litIdx])]++;
+
+	std::vector<int> occurrenceHistogram(clausesVec.size() + 1, 0);
+	for (int var = 1; var <= translatedVarCount; ++var)
+		occurrenceHistogram[variableCount[var]]++;
+
+	std::vector<std::pair<int, int> > countOccurrences;
+	for (size_t count = 0; count < occurrenceHistogram.size(); ++count)
+		if (occurrenceHistogram[count] != 0)
+			countOccurrences.push_back(std::make_pair(static_cast<int>(count), occurrenceHistogram[count]));
+
+	const double totalOccurrences = std::accumulate(occurrenceHistogram.begin(), occurrenceHistogram.end(), 0.0);
+	std::vector<int> X;
+	std::vector<double> Y(countOccurrences.size(), 0.0);
+	std::vector<double> syLogX(countOccurrences.size(), 0.0);
+	std::vector<double> syX(countOccurrences.size(), 0.0);
+	X.reserve(countOccurrences.size());
+	for (size_t i = 0; i < countOccurrences.size(); ++i)
+		X.push_back(countOccurrences[i].first);
+
+	for (int i = static_cast<int>(countOccurrences.size()) - 2; i >= 0; --i)
+	{
+		Y[i] = Y[i + 1] + (totalOccurrences > 0.0 ? countOccurrences[i].second / totalOccurrences : 0.0);
+		if (X[i] > 0)
+		{
+			syLogX[i] = syLogX[i + 1] + (countOccurrences[i].second / totalOccurrences) * log(static_cast<double>(X[i]));
+			syX[i] = syX[i + 1] + (countOccurrences[i].second / totalOccurrences) * static_cast<double>(X[i]);
+		}
+	}
+	double alpha = 0.0;
+	if (X.size() >= 4)
+		alpha = mostLikelyAlpha(X, Y, syLogX, syX);
+
+	std::vector<std::vector<int> > vigAdj = initUndirectedAdjacency(translatedVarCount);
+	std::vector<std::map<int, double> > vigWeighted(translatedVarCount + 1);
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		const std::vector<int> &clause = clausesVec[clauseIdx];
+		if (clause.size() < 2)
+			continue;
+
+		const double weight = 1.0 / static_cast<double>((clause.size() * (clause.size() - 1)) / 2);
+		for (size_t i = 0; i < clause.size(); ++i)
+		{
+			for (size_t j = i + 1; j < clause.size(); ++j)
+			{
+				const int lhs = ABS(clause[i]);
+				const int rhs = ABS(clause[j]);
+				vigAdj[lhs].push_back(rhs);
+				vigAdj[rhs].push_back(lhs);
+				vigWeighted[lhs][rhs] += weight;
+				vigWeighted[rhs][lhs] += weight;
+			}
+		}
+	}
+	finalizeUndirectedAdjacency(vigAdj);
+
+	std::vector<std::vector<int> > cvigAdj = initUndirectedAdjacency(translatedVarCount + static_cast<int>(clausesVec.size()));
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		const int clauseNode = translatedVarCount + static_cast<int>(clauseIdx) + 1;
+		for (size_t litIdx = 0; litIdx < clausesVec[clauseIdx].size(); ++litIdx)
+		{
+			const int varNode = ABS(clausesVec[clauseIdx][litIdx]);
+			cvigAdj[varNode].push_back(clauseNode);
+			cvigAdj[clauseNode].push_back(varNode);
+		}
+	}
+	finalizeUndirectedAdjacency(cvigAdj);
+
+	writeFeature("vig_modularty", approximateLouvainModularity(vigWeighted, translatedVarCount));
+	writeFeature("vig_d_poly", fractalSlope(burningByNodeDegree(vigAdj, translatedVarCount)));
+	writeFeature("cvig_db_poly", fractalSlope(burningByNodeDegree(cvigAdj, translatedVarCount + static_cast<int>(clausesVec.size()))));
+	writeFeature("variable_alpha", alpha);
+	writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+	myTime = gSW.TotalLap();
+	return FEAT_OK;
+}
+
+int SATinstance::newCnfGraphFeatures(bool doComp)
+{
+	static const char *kGraphPrefixes[] = {
+		"v_nd_p_",
+		"v_nd_n_",
+		"c_nd_p_",
+		"c_nd_n_",
+		"vg_al_",
+		"cg_al_",
+		"rg_",
+		"big_"};
+
+	if (!doComp)
+	{
+		for (size_t i = 0; i < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++i)
+			writeReservedMantheyGraphFeatures(this, kGraphPrefixes[i]);
+		writeFeature("ncnf-graphs-featuretime", RESERVED_VALUE);
+		return 0;
+	}
+
+	std::vector<std::vector<int> > clausesVec;
+	std::vector<int> literalOccurrences;
+	std::vector<int> clauseLiteralOccurrences;
+	int translatedVarCount = 0;
+	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+
+	std::vector<double> vPos(translatedVarCount, 0.0), vNeg(translatedVarCount, 0.0);
+	std::vector<double> cPos(clausesVec.size(), 0.0), cNeg(clausesVec.size(), 0.0);
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		for (size_t litIdx = 0; litIdx < clausesVec[clauseIdx].size(); ++litIdx)
+		{
+			const int literal = clausesVec[clauseIdx][litIdx];
+			if (literal > 0)
+			{
+				vPos[literal - 1] += 1.0;
+				cPos[clauseIdx] += 1.0;
+			}
+			else
+			{
+				vNeg[-literal - 1] += 1.0;
+				cNeg[clauseIdx] += 1.0;
+			}
+		}
+	}
+	const std::vector<double> zeroWeights(1, 0.0);
+	writeMantheyGraphFeatures(this, "v_nd_p_", vPos, zeroWeights);
+	writeMantheyGraphFeatures(this, "v_nd_n_", vNeg, zeroWeights);
+	writeMantheyGraphFeatures(this, "c_nd_p_", cPos, zeroWeights);
+	writeMantheyGraphFeatures(this, "c_nd_n_", cNeg, zeroWeights);
+
+	std::vector<std::vector<int> > vgAdj = initUndirectedAdjacency(translatedVarCount);
+	std::map<EdgeKey, double> vgWeights;
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		const std::vector<int> &clause = clausesVec[clauseIdx];
+		for (size_t i = 0; i < clause.size(); ++i)
+		{
+			int k = 0;
+			for (size_t j = i + 1; j < clause.size(); ++j)
+			{
+				const int lhs = ABS(clause[i]);
+				const int rhs = ABS(clause[j]);
+				vgAdj[lhs].push_back(rhs);
+				vgAdj[rhs].push_back(lhs);
+				k++;
+				vgWeights[EdgeKey(lhs, rhs)] = pow(2.0, -k);
+			}
+		}
+	}
+	finalizeUndirectedAdjacency(vgAdj);
+	writeMantheyGraphFeatures(this, "vg_al_", nodeDegreesFromUndirected(vgAdj, translatedVarCount), doubledUndirectedWeights(vgWeights));
+
+	std::vector<std::vector<int> > cgAdj = initUndirectedAdjacency(static_cast<int>(clausesVec.size()));
+	std::map<EdgeKey, double> cgWeights;
+	for (size_t i = 0; i < clausesVec.size(); ++i)
+	{
+		const std::set<int> clauseLits(clausesVec[i].begin(), clausesVec[i].end());
+		for (size_t j = i + 1; j < clausesVec.size(); ++j)
+		{
+			int shared = 0;
+			for (std::set<int>::const_iterator it = clauseLits.begin(); it != clauseLits.end(); ++it)
+				if (std::find(clausesVec[j].begin(), clausesVec[j].end(), *it) != clausesVec[j].end())
+					shared++;
+			if (shared > 0)
+			{
+				cgAdj[i + 1].push_back(j + 1);
+				cgAdj[j + 1].push_back(i + 1);
+				cgWeights[EdgeKey(i + 1, j + 1)] = static_cast<double>(shared);
+			}
+		}
+	}
+	finalizeUndirectedAdjacency(cgAdj);
+	writeMantheyGraphFeatures(this, "cg_al_", nodeDegreesFromUndirected(cgAdj, static_cast<int>(clausesVec.size())), doubledUndirectedWeights(cgWeights));
+
+	std::vector<std::vector<int> > rgAdj = initUndirectedAdjacency(static_cast<int>(clausesVec.size()));
+	std::map<EdgeKey, double> rgWeights;
+	for (size_t i = 0; i < clausesVec.size(); ++i)
+	{
+		const std::set<int> clauseA(clausesVec[i].begin(), clausesVec[i].end());
+		for (size_t j = i + 1; j < clausesVec.size(); ++j)
+		{
+			const std::set<int> clauseB(clausesVec[j].begin(), clausesVec[j].end());
+			int pivot = 0;
+			int pivotCount = 0;
+			for (std::set<int>::const_iterator it = clauseA.begin(); it != clauseA.end(); ++it)
+			{
+				if (clauseB.count(-(*it)) != 0)
+				{
+					pivot = *it;
+					pivotCount++;
+				}
+			}
+			if (pivotCount != 1)
+				continue;
+
+			bool tautologicalResolvent = false;
+			std::set<int> resolvent;
+			for (std::set<int>::const_iterator it = clauseA.begin(); it != clauseA.end(); ++it)
+			{
+				if (*it == pivot)
+					continue;
+				if (resolvent.count(-(*it)) != 0)
+				{
+					tautologicalResolvent = true;
+					break;
+				}
+				resolvent.insert(*it);
+			}
+			if (tautologicalResolvent)
+				continue;
+			for (std::set<int>::const_iterator it = clauseB.begin(); it != clauseB.end(); ++it)
+			{
+				if (*it == -pivot)
+					continue;
+				if (resolvent.count(-(*it)) != 0)
+				{
+					tautologicalResolvent = true;
+					break;
+				}
+				resolvent.insert(*it);
+			}
+			if (tautologicalResolvent)
+				continue;
+
+			rgAdj[i + 1].push_back(j + 1);
+			rgAdj[j + 1].push_back(i + 1);
+			const size_t unionSize = clauseA.size() + clauseB.size();
+			rgWeights[EdgeKey(i + 1, j + 1)] = pow(2.0, -(static_cast<double>(unionSize) - 2.0));
+		}
+	}
+	finalizeUndirectedAdjacency(rgAdj);
+	writeMantheyGraphFeatures(this, "rg_", nodeDegreesFromUndirected(rgAdj, static_cast<int>(clausesVec.size())), doubledUndirectedWeights(rgWeights));
+
+	const int literalNodeCount = 2 * translatedVarCount;
+	std::vector<std::vector<int> > bigAdj(literalNodeCount + 1);
+	std::map<DirectedEdgeKey, double> bigWeights;
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		if (clausesVec[clauseIdx].size() != 2)
+			continue;
+		const int a = clausesVec[clauseIdx][0];
+		const int b = clausesVec[clauseIdx][1];
+		const DirectedEdgeKey ab(literalNodeIndex(-a, translatedVarCount), literalNodeIndex(b, translatedVarCount));
+		const DirectedEdgeKey ba(literalNodeIndex(-b, translatedVarCount), literalNodeIndex(a, translatedVarCount));
+		bigAdj[ab.from].push_back(ab.to);
+		bigAdj[ba.from].push_back(ba.to);
+		bigWeights[ab] = 1.0;
+		bigWeights[ba] = 1.0;
+	}
+	for (int node = 1; node <= literalNodeCount; ++node)
+	{
+		sort(bigAdj[node].begin(), bigAdj[node].end());
+		bigAdj[node].erase(unique(bigAdj[node].begin(), bigAdj[node].end()), bigAdj[node].end());
+	}
+	writeMantheyGraphFeatures(this, "big_", directedOutDegrees(bigAdj, literalNodeCount), directedWeights(bigWeights));
+
+	writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+	myTime = gSW.TotalLap();
+	return FEAT_OK;
+}
+
+int SATinstance::newCnfConstraintFeatures(bool doComp)
+{
+	static const char *kConstraintPrefixes[] = {"and_", "band_", "exo_"};
+	if (!doComp)
+	{
+		for (size_t i = 0; i < sizeof(kConstraintPrefixes) / sizeof(kConstraintPrefixes[0]); ++i)
+			writeReservedMantheyGraphFeatures(this, kConstraintPrefixes[i]);
+		writeFeature("ncnf-constraints-featuretime", RESERVED_VALUE);
+		return 0;
+	}
+
+	std::vector<std::vector<int> > clausesVec;
+	std::vector<int> literalOccurrences;
+	std::vector<int> clauseLiteralOccurrences;
+	int translatedVarCount = 0;
+	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+
+	const int literalNodeCount = 2 * translatedVarCount;
+	std::vector<std::vector<int> > bigAdj(literalNodeCount + 1);
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		if (clausesVec[clauseIdx].size() != 2)
+			continue;
+		const int a = clausesVec[clauseIdx][0];
+		const int b = clausesVec[clauseIdx][1];
+		bigAdj[literalNodeIndex(-a, translatedVarCount)].push_back(literalNodeIndex(b, translatedVarCount));
+		bigAdj[literalNodeIndex(-b, translatedVarCount)].push_back(literalNodeIndex(a, translatedVarCount));
+	}
+	for (int node = 1; node <= literalNodeCount; ++node)
+	{
+		sort(bigAdj[node].begin(), bigAdj[node].end());
+		bigAdj[node].erase(unique(bigAdj[node].begin(), bigAdj[node].end()), bigAdj[node].end());
+	}
+
+	std::vector<std::vector<int> > andAdj = initUndirectedAdjacency(literalNodeCount);
+	std::vector<std::vector<int> > bandAdj = initUndirectedAdjacency(literalNodeCount);
+	std::vector<std::vector<int> > exoAdj = initUndirectedAdjacency(literalNodeCount);
+	std::map<EdgeKey, double> andWeights;
+	std::map<EdgeKey, double> bandWeights;
+	std::map<EdgeKey, double> exoWeights;
+
+	auto hasImplication = [&](int fromLiteral, int toLiteral) {
+		const std::vector<int> &neighbors = bigAdj[literalNodeIndex(fromLiteral, translatedVarCount)];
+		return binary_search(neighbors.begin(), neighbors.end(), literalNodeIndex(toLiteral, translatedVarCount));
+	};
+
+	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+	{
+		const std::vector<int> &clause = clausesVec[clauseIdx];
+		if (clause.size() <= 2)
+			continue;
+
+		bool isExo = true;
+		for (size_t i = 0; i < clause.size(); ++i)
+		{
+			for (size_t j = 0; j < clause.size(); ++j)
+			{
+				if (i == j)
+					continue;
+				if (!hasImplication(clause[i], -clause[j]))
+				{
+					isExo = false;
+					break;
+				}
+			}
+			if (!isExo)
+				break;
+		}
+
+		const double weight = pow(2.0, -static_cast<double>(clause.size()));
+		if (isExo)
+		{
+			for (size_t i = 0; i < clause.size(); ++i)
+			{
+				for (size_t j = 0; j < clause.size(); ++j)
+				{
+					if (i == j)
+						continue;
+					const int source = literalNodeIndex(clause[j], translatedVarCount);
+					const int target = literalNodeIndex(-clause[i], translatedVarCount);
+					andAdj[source].push_back(target);
+					andAdj[target].push_back(source);
+					andWeights[EdgeKey(source, target)] = weight;
+
+					const int exoSource = literalNodeIndex(clause[j], translatedVarCount);
+					const int exoTarget = literalNodeIndex(clause[i], translatedVarCount);
+					exoAdj[exoSource].push_back(exoTarget);
+					exoAdj[exoTarget].push_back(exoSource);
+					exoWeights[EdgeKey(exoSource, exoTarget)] = 1.0;
+				}
+			}
+			continue;
+		}
+
+		bool blocked = true;
+		for (size_t i = 0; i < clause.size(); ++i)
+		{
+			const int literalIndex = clause[i] > 0 ? clause[i] : translatedVarCount + (-clause[i]);
+			if (literalOccurrences[literalIndex] > 3)
+			{
+				blocked = false;
+				break;
+			}
+		}
+		if (!blocked)
+			continue;
+
+		for (size_t i = 0; i < clause.size(); ++i)
+		{
+			for (size_t j = 0; j < clause.size(); ++j)
+			{
+				if (i == j)
+					continue;
+				const int source = literalNodeIndex(clause[j], translatedVarCount);
+				const int target = literalNodeIndex(-clause[i], translatedVarCount);
+				bandAdj[source].push_back(target);
+				bandAdj[target].push_back(source);
+				bandWeights[EdgeKey(source, target)] = weight;
+			}
+		}
+	}
+
+	finalizeUndirectedAdjacency(andAdj);
+	finalizeUndirectedAdjacency(bandAdj);
+	finalizeUndirectedAdjacency(exoAdj);
+
+	writeMantheyGraphFeatures(this, "and_", nodeDegreesFromUndirected(andAdj, literalNodeCount), doubledUndirectedWeights(andWeights));
+	writeMantheyGraphFeatures(this, "band_", nodeDegreesFromUndirected(bandAdj, literalNodeCount), doubledUndirectedWeights(bandWeights));
+	writeMantheyGraphFeatures(this, "exo_", nodeDegreesFromUndirected(exoAdj, literalNodeCount), doubledUndirectedWeights(exoWeights));
+
+	writeFeature("ncnf-constraints-featuretime", gSW.TotalLap() - myTime);
+	myTime = gSW.TotalLap();
+	return FEAT_OK;
+}
+
+int SATinstance::newCnfRwhFeatures(bool doComp)
+{
+	if (!doComp)
+	{
+		for (int iteration = 0; iteration < 3; ++iteration)
+		{
+			char featureName[64];
+			snprintf(featureName, sizeof(featureName), "rwh_%d_mean", iteration);
+			writeFeature(featureName, RESERVED_VALUE);
+			snprintf(featureName, sizeof(featureName), "rwh_%d_coeff", iteration);
+			writeFeature(featureName, RESERVED_VALUE);
+			snprintf(featureName, sizeof(featureName), "rwh_%d_min", iteration);
+			writeFeature(featureName, RESERVED_VALUE);
+			snprintf(featureName, sizeof(featureName), "rwh_%d_max", iteration);
+			writeFeature(featureName, RESERVED_VALUE);
+		}
+		writeFeature("ncnf-rwh-featuretime", RESERVED_VALUE);
+		return 0;
+	}
+
+	std::vector<std::vector<int> > clausesVec;
+	std::vector<int> literalOccurrences;
+	std::vector<int> clauseLiteralOccurrences;
+	int translatedVarCount = 0;
+	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+
+	const int maxClauseSize = 10;
+	const double gamma = 5.0;
+	const double maxDouble = 1e201;
+	double mu = 1.0;
+	std::vector<double> lastPos(translatedVarCount + 1, 1.0), lastNeg(translatedVarCount + 1, 1.0);
+	std::vector<double> thisPos(translatedVarCount + 1, 0.0), thisNeg(translatedVarCount + 1, 0.0);
+
+	for (int iteration = 0; iteration < 3; ++iteration)
+	{
+		for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
+		{
+			const std::vector<int> &clause = clausesVec[clauseIdx];
+			const int clauseLength = static_cast<int>(clause.size());
+			if (clauseLength <= 1)
+				continue;
+
+			const int exponent = maxClauseSize < clauseLength ? 0 : maxClauseSize - clauseLength;
+			const double clauseConstant = pow(gamma, static_cast<double>(exponent)) / pow(mu, static_cast<double>(clauseLength - 1));
+
+			double clauseValue = 1.0;
+			bool foundZero = false;
+			for (size_t litIdx = 0; litIdx < clause.size(); ++litIdx)
+			{
+				const int literal = clause[litIdx];
+				const double compValue = literal < 0 ? lastPos[-literal] : lastNeg[literal];
+				if (fabs(compValue) < EPSILON)
+				{
+					foundZero = true;
+					break;
+				}
+				clauseValue *= compValue;
+			}
+			if (foundZero)
+				continue;
+
+			clauseValue *= clauseConstant;
+			for (size_t litIdx = 0; litIdx < clause.size(); ++litIdx)
+			{
+				const int literal = clause[litIdx];
+				const double compValue = literal < 0 ? lastPos[-literal] : lastNeg[literal];
+				const double updateValue = clauseValue / compValue;
+				if (literal > 0)
+					thisPos[literal] += updateValue;
+				else
+					thisNeg[-literal] += updateValue;
+			}
+		}
+
+		std::vector<double> sequence;
+		sequence.reserve(2 * translatedVarCount);
+		mu = 0.0;
+		for (int var = 1; var <= translatedVarCount; ++var)
+		{
+			const double posValue = MIN(thisPos[var], maxDouble);
+			const double negValue = MIN(thisNeg[var], maxDouble);
+			sequence.push_back(posValue);
+			sequence.push_back(negValue);
+			mu += posValue + negValue;
+		}
+		if (translatedVarCount > 0)
+			mu /= (2.0 * static_cast<double>(translatedVarCount));
+		if (mu < 1.0)
+			mu = 1.0;
+
+		const double rwhMean = sequence.empty() ? 0.0 : std::accumulate(sequence.begin(), sequence.end(), 0.0) / static_cast<double>(sequence.size());
+		double variance = 0.0;
+		for (size_t i = 0; i < sequence.size(); ++i)
+			variance += (sequence[i] - rwhMean) * (sequence[i] - rwhMean);
+		const double rwhStd = sequence.empty() ? 0.0 : sqrt(variance / static_cast<double>(sequence.size()));
+		const double rwhCoeff = (fabs(rwhMean) < EPSILON && fabs(rwhStd) < EPSILON ? 0.0 : rwhStd / rwhMean);
+
+		char featureName[64];
+		snprintf(featureName, sizeof(featureName), "rwh_%d_mean", iteration);
+		writeFeature(featureName, rwhMean);
+		snprintf(featureName, sizeof(featureName), "rwh_%d_coeff", iteration);
+		writeFeature(featureName, rwhCoeff);
+		snprintf(featureName, sizeof(featureName), "rwh_%d_min", iteration);
+		writeFeature(featureName, sequence.empty() ? 0.0 : *min_element(sequence.begin(), sequence.end()));
+		snprintf(featureName, sizeof(featureName), "rwh_%d_max", iteration);
+		writeFeature(featureName, sequence.empty() ? 0.0 : *max_element(sequence.begin(), sequence.end()));
+
+		lastPos.swap(thisPos);
+		lastNeg.swap(thisNeg);
+		std::fill(thisPos.begin(), thisPos.end(), 0.0);
+		std::fill(thisNeg.begin(), thisNeg.end(), 0.0);
+	}
+
+	writeFeature("ncnf-rwh-featuretime", gSW.TotalLap() - myTime);
+	myTime = gSW.TotalLap();
+	return FEAT_OK;
+}
+
 void SATinstance::writeFeature(const char *name, double val)
 {
 	if (ignoreBadFeats)
@@ -1970,7 +3194,7 @@ void SATinstance::writeFeature(const char *name, double val)
 	if (indexCount >= MAX_FEATURES)
 	{
 		fprintf(stderr, "c TOO MANY FEATURES COMPUTED!\n");
-		exit(1);
+		throw std::runtime_error("Too many features computed");
 	}
 	// printf("feature %d: %s; val: %f\n", indexCount, name, val);
 }
@@ -2352,7 +3576,7 @@ int runLocalSearchProbe(SATinstance *sat,
 	{
 		fprintf(stderr, "c Error: could not read from outputfile %s.\n", outputFile);
 		solver->cleanup();
-		exit(1);
+		throw std::runtime_error(std::string("Could not read local-search output file ") + outputFile);
 	}
 
 	sat->writeFeature(timeFeature, gSW.TotalLap() - myTime);
@@ -2516,7 +3740,7 @@ int SATinstance::cl_prob(const char *outfile, bool doComp)
 	if (!fin)
 	{
 		fprintf(stderr, "c Error: could not read from %s.\n", outfile);
-		exit(1);
+		throw std::runtime_error(std::string("Could not read clause-learning output from ") + outfile);
 	}
 
 	char strbuf[1024];

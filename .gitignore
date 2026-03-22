@@ -2,4 +2,14 @@
 
 # SAT feature extractor build artifacts
 SAT-features-competition2024/obj/*.o
+SAT-features-competition2024/VARSAT/*.o
+SAT-features-competition2024/*.so
+SAT-features-competition2024/lp_solve_5.0/*.so
 SAT-features-competition2024/*~
+
+# Python packaging build artifacts
+build/
+satzilla_features.egg-info/
+
+*.pyc
+__pycache__/

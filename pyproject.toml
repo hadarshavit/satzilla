@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satzilla-features"
+version = "0.1.0"
+description = "Python wrapper for the Revisiting SATZilla 2024 feature extractor"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+pysat = ["python-sat"]
+
+[tool.setuptools]
+packages = ["satzilla_features"]

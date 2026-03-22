@@ -142,6 +142,10 @@ private:
   int lp_return_val;
 
   void mkVarTranslation(map<int, int> *trans_for, map<int, int> *trans_back);
+  void buildTranslatedActiveClauses(std::vector<std::vector<int> > &translatedClauses,
+                                    int &translatedVarCount,
+                                    std::vector<int> &literalOccurrences,
+                                    std::vector<int> &clauseLiteralOccurrences);
 
   const char *inputFileName;
 
@@ -150,6 +154,10 @@ public:
   ~SATinstance();
 
   int computeFeatures(bool doComp, bool doClauseGraphFeatures);
+  int structureFeatures(bool doComp);
+  int newCnfGraphFeatures(bool doComp);
+  int newCnfConstraintFeatures(bool doComp);
+  int newCnfRwhFeatures(bool doComp);
   void clauseGraphFeatures(bool realCC);
   int sp(bool doComp);
   int compute_lp(bool doComp);

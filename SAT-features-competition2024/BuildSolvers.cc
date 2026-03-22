@@ -24,6 +24,7 @@ void setSolverArgs(BinSolver *solver, std::initializer_list<const char *> args)
 
 void BuildSolvers(const char *strseed, const char *outfile)
 {
+  DestroySolvers();
 
   (void)strseed;
 
@@ -46,4 +47,16 @@ void BuildSolvers(const char *strseed, const char *outfile)
                                  "-inst", nullptr, "-alg", "gsat", "-noimprove", "0.5n", "-r", "stats", outfile,
                                  "best[mean+cv],firstlmstep[mean+median+cv+q10+q90],bestavgimpr[mean+cv],firstlmratio[mean+cv],estacl,numsolve",
                                  "-runs", UBCSAT_NUM_RUNS, "-gtimeout", UBCSAT_TIME_LIMIT, "-solve"});
+}
+
+void DestroySolvers()
+{
+  delete SolverSatelite;
+  delete SolverZchaff;
+  delete SolverSaps;
+  delete SolverGsat;
+  SolverSatelite = nullptr;
+  SolverZchaff = nullptr;
+  SolverSaps = nullptr;
+  SolverGsat = nullptr;
 }

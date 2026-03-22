@@ -1,6 +1,6 @@
 #ifndef __SATZILLA_GLOBAL_H__
 #define __SATZILLA_GLOBAL_H__
-#define MAX_FEATURES 1000
+#define MAX_FEATURES 2000
 
 #define FEAT_OK 666
 #define DONE 123456789

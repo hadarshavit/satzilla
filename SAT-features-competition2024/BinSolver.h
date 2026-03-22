@@ -32,6 +32,7 @@ extern BinSolver* SolverSatelite;
 
 
 void BuildSolvers(const char* strseed, const char* outfile);
+void DestroySolvers();
 
 
 #endif
