@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "satzilla-features"
+name = "satzilla"
 version = "0.1.0"
 description = "Python wrapper for the Revisiting SATZilla 2024 feature extractor"
 readme = "README.md"

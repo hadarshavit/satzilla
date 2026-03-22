@@ -9,7 +9,7 @@ from setuptools.command.build_py import build_py as _build_py
 
 
 ROOT = Path(__file__).resolve().parent
-FEATURES_DIR = ROOT / "SAT-features-competition2024"
+FEATURES_DIR = ROOT / "src"
 PACKAGE_NAME = "satzilla_features"
 
 

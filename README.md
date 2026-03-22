@@ -49,6 +49,12 @@ Timeout controls:
 - `--preprocess-timeout`: timeout override for the preprocessing step
 
 ## Python Interface
+Install from PyPI:
+
+```bash
+pip install satzilla
+```
+
 An importable Python interface is available in the `satzilla_features` package. It accepts PySAT `CNF` formulas directly and
 calls the extractor through a bundled shared library using `ctypes`; it does not shell out to the CLI.
 
