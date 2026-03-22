@@ -39,8 +39,22 @@ def main():
         output_path = Path(tmpdir) / "features.csv"
         run([str(BINARY), "-all", str(SMOKE_CNF), str(output_path)])
 
+        timeout_output_path = Path(tmpdir) / "features-timeout.csv"
+        run(
+            [
+                str(BINARY),
+                "--group-timeout",
+                "0",
+                "-all",
+                str(SMOKE_CNF),
+                str(timeout_output_path),
+            ]
+        )
+
         with output_path.open(newline="") as handle:
             rows = list(csv.reader(handle))
+        with timeout_output_path.open(newline="") as handle:
+            timeout_rows = list(csv.reader(handle))
 
     require(len(rows) == 2, f"expected 2 csv rows, got {len(rows)}")
     header, values = rows
@@ -87,6 +101,15 @@ def main():
     ):
         value = float(feature_map[feature_name])
         require(value > -512.0, f"{feature_name} was left at the reserved value")
+
+    require(len(timeout_rows) == 2, f"expected 2 timeout csv rows, got {len(timeout_rows)}")
+    timeout_header, timeout_values = timeout_rows
+    timeout_map = dict(zip(timeout_header, timeout_values))
+    require("nvarsOrig" in timeout_map, "base features missing from timeout output")
+    require("variable_alpha" in timeout_map, "structure features missing from timeout output")
+    require("rwh_2_mean" in timeout_map, "later feature group missing from timeout output")
+    require(float(timeout_map["variable_alpha"]) == -512.0, "structure timeout did not reserve values")
+    require(float(timeout_map["rwh_2_mean"]) == -512.0, "rwh timeout did not reserve values")
 
     print("package smoke test passed")
 

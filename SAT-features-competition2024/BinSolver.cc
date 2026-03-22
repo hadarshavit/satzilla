@@ -59,9 +59,11 @@ bool BinSolver::writeBinaryFile(char* nameBuf, const unsigned char* data, int le
 */
 int BinSolver::spawnBinary(const char *binFile, const char *const argv[], const char *outFileName, int timeout)
 {
-  // -- check timeout
-  if (timeout == -1)
-    timeout = (int)(gTimeOut - gSW.TotalLap());
+  const int totalRemaining = remainingTotalTimeoutSeconds();
+  if (timeout < 0)
+    timeout = totalRemaining;
+  else if (totalRemaining < timeout)
+    timeout = totalRemaining;
   if (timeout < 1) // -- no point in running
     return 1;
   if (DEB)

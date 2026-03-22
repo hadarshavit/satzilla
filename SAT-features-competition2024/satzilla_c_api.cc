@@ -63,6 +63,8 @@ FeatureOptions toFeatureOptions(const satzilla_options_t *options)
   converted.doLobjois = options->do_lobjois != 0;
   converted.doLP = options->do_lp != 0;
   converted.timeoutSeconds = options->timeout_seconds;
+  converted.groupTimeoutSeconds = options->group_timeout_seconds;
+  converted.preprocessTimeoutSeconds = options->preprocess_timeout_seconds;
   converted.solverRoot = options->solver_root;
   return converted;
 }

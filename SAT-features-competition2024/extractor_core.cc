@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,7 +20,6 @@ constexpr int kDefaultTimeoutSeconds = 2419200; // 4 weeks
 constexpr const char *kSolverSeed = "123456";
 constexpr const char *kOutputTemplate = "/outputXXXXXX";
 constexpr const char *kTmpConvertedTemplate = "/tmp_wcnf_to_cnf_XXXXXX";
-constexpr int kPreprocessorTimeoutSeconds = 35;
 constexpr int kSolvedSatCode = 10;
 constexpr int kSolvedUnsatCode = 20;
 constexpr int kKilledBySignalCode = 137;
@@ -58,6 +58,8 @@ void resetGlobalState(const FeatureOptions &options)
 {
   gSW = Stopwatch();
   gTimeOut = determineTimeout(options);
+  gGroupTimeoutSeconds = options.groupTimeoutSeconds;
+  gPreprocessTimeoutSeconds = options.preprocessTimeoutSeconds;
   preTime = 0.0;
   OrigNumVars = -1;
   OrigNumClauses = -1;
@@ -154,6 +156,46 @@ double preTime;
 int OrigNumVars = -1, OrigNumClauses = -1;
 double myTime = 0.0;
 const char *mypath = nullptr;
+int gGroupTimeoutSeconds = -1;
+int gPreprocessTimeoutSeconds = -1;
+
+int remainingTotalTimeoutSeconds()
+{
+  if (gTimeOut < 0)
+    return kDefaultTimeoutSeconds;
+
+  const double remaining = static_cast<double>(gTimeOut) - gSW.TotalLap();
+  if (remaining <= 0.0)
+    return 0;
+  return static_cast<int>(ceil(remaining));
+}
+
+int resolveGroupTimeoutSeconds(int defaultSeconds)
+{
+  const int configured = gGroupTimeoutSeconds >= 0 ? gGroupTimeoutSeconds : defaultSeconds;
+  const int remaining = remainingTotalTimeoutSeconds();
+  return configured < remaining ? configured : remaining;
+}
+
+int resolvePreprocessTimeoutSeconds()
+{
+  const int configured = gPreprocessTimeoutSeconds >= 0 ? gPreprocessTimeoutSeconds : DEFAULT_PREPROCESS_TIMEOUT;
+  const int remaining = remainingTotalTimeoutSeconds();
+  return configured < remaining ? configured : remaining;
+}
+
+bool totalTimeoutReached()
+{
+  return remainingTotalTimeoutSeconds() <= 0;
+}
+
+bool groupTimeoutReached(double startTimeSeconds, int defaultSeconds)
+{
+  const int timeoutSeconds = resolveGroupTimeoutSeconds(defaultSeconds);
+  if (timeoutSeconds <= 0)
+    return true;
+  return (gSW.TotalLap() - startTimeSeconds) >= static_cast<double>(timeoutSeconds);
+}
 
 void enableAllFeatures(FeatureOptions &opts)
 {
@@ -236,18 +278,30 @@ int runFeatureExtraction(const char *inputFile,
     if (!prepared.weightedCnf)
     {
       preTime = gSW.TotalLap() - myTime;
-      returnVal = SolverSatelite->execute(prepared.selectedInputFile, kPreprocessorTimeoutSeconds);
-      myTime = gSW.TotalLap();
-      LogDebug("c SatELite pre-process time is %f second\n", myTime - preTime);
-
-      if (returnVal == kSolvedSatCode || returnVal == kSolvedUnsatCode)
+      const int preprocessTimeout = resolvePreprocessTimeoutSeconds();
+      if (preprocessTimeout > 0)
       {
-        LogDebug("c This instance is solved by pre-processor with %d!\n", returnVal);
-        solved = true;
-        doComp = false;
+        const std::string preprocessTimeoutText = std::to_string(preprocessTimeout);
+        SolverSatelite->argv[6] = preprocessTimeoutText.c_str();
+        returnVal = SolverSatelite->execute(prepared.selectedInputFile, preprocessTimeout);
+        myTime = gSW.TotalLap();
+        LogDebug("c SatELite pre-process time is %f second\n", myTime - preTime);
+
+        if (returnVal == kSolvedSatCode || returnVal == kSolvedUnsatCode)
+        {
+          LogDebug("c This instance is solved by pre-processor with %d!\n", returnVal);
+          solved = true;
+          doComp = false;
+        }
+
+        SolverSatelite->cleanup();
+      }
+      else
+      {
+        returnVal = kKilledBySignalCode;
+        myTime = gSW.TotalLap();
       }
 
-      SolverSatelite->cleanup();
       if (returnVal == kKilledBySignalCode)
       {
         sat = new SATinstance(prepared.selectedInputFile, doComp);
@@ -273,8 +327,11 @@ int runFeatureExtraction(const char *inputFile,
 
     if (options.doBase)
     {
+      myTime = gSW.TotalLap();
       preTime = gSW.TotalLap() - myTime;
-      returnVal = sat->computeFeatures(doComp, !prepared.weightedCnf);
+      returnVal = sat->computeFeatures(
+          doComp && !totalTimeoutReached() && resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0,
+          !prepared.weightedCnf);
       LogDebug("c Base features time is %f second\n", gSW.TotalLap() - preTime);
       if (sat->getNumVals() == 0 || sat->getNumClaus() == 0)
       {
@@ -283,53 +340,88 @@ int runFeatureExtraction(const char *inputFile,
       }
     }
 
-    bool timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doStructure && !timeout)
-      sat->structureFeatures(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doNcnfGraphs && !timeout)
-      sat->newCnfGraphFeatures(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doNcnfConstraints && !timeout)
-      sat->newCnfConstraintFeatures(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doNcnfRwh && !timeout)
-      sat->newCnfRwhFeatures(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doDia && !timeout && returnVal != VCG_TIMEOUT_CODE)
-      sat->init_diameter(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doCl && !timeout)
-      sat->cl_prob(prepSuccessful ? solverOutput.data() : prepared.selectedInputFile, doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doSp && !timeout)
-      sat->sp(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doUnitProbe && !timeout)
-      sat->unitPropProbe(false, doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doLP && !timeout)
-      sat->compute_lp(doComp);
-
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doLSProbe && !timeout)
+    if (options.doStructure)
     {
-      const char *lsInput = prepSuccessful ? solverOutput.data() : prepared.selectedInputFile;
-      sat->localSearchProbeSaps(lsInput, doComp);
-      sat->localSearchProbeGsat(lsInput, doComp);
+      myTime = gSW.TotalLap();
+      sat->structureFeatures(
+          doComp && !totalTimeoutReached() && resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0);
     }
 
-    timeout = gSW.TotalLap() > TOTAL_TIMEOUT;
-    if (options.doLobjois && !timeout)
-      sat->lobjoisProbe(false, doComp);
+    if (options.doNcnfGraphs)
+    {
+      myTime = gSW.TotalLap();
+      sat->newCnfGraphFeatures(
+          doComp && !totalTimeoutReached() && resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doNcnfConstraints)
+    {
+      myTime = gSW.TotalLap();
+      sat->newCnfConstraintFeatures(
+          doComp && !totalTimeoutReached() && resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doNcnfRwh)
+    {
+      myTime = gSW.TotalLap();
+      sat->newCnfRwhFeatures(
+          doComp && !totalTimeoutReached() && resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doDia)
+    {
+      myTime = gSW.TotalLap();
+      sat->init_diameter(doComp && !totalTimeoutReached() &&
+                         resolveGroupTimeoutSeconds(DEFAULT_DIA_TIME_LIMIT) > 0 &&
+                         returnVal != VCG_TIMEOUT_CODE);
+    }
+
+    if (options.doCl)
+    {
+      myTime = gSW.TotalLap();
+      sat->cl_prob(prepSuccessful ? solverOutput.data() : prepared.selectedInputFile,
+                   doComp && !totalTimeoutReached() &&
+                       resolveGroupTimeoutSeconds(DEFAULT_CL_TIME_LIMIT) > 0);
+    }
+
+    if (options.doSp)
+    {
+      myTime = gSW.TotalLap();
+      sat->sp(doComp && !totalTimeoutReached() &&
+              resolveGroupTimeoutSeconds(DEFAULT_SP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doUnitProbe)
+    {
+      myTime = gSW.TotalLap();
+      sat->unitPropProbe(false, doComp && !totalTimeoutReached() &&
+                                    resolveGroupTimeoutSeconds(DEFAULT_GROUP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doLP)
+    {
+      myTime = gSW.TotalLap();
+      sat->compute_lp(doComp && !totalTimeoutReached() &&
+                      resolveGroupTimeoutSeconds(DEFAULT_LP_TIME_LIMIT) > 0);
+    }
+
+    if (options.doLSProbe)
+    {
+      myTime = gSW.TotalLap();
+      const char *lsInput = prepSuccessful ? solverOutput.data() : prepared.selectedInputFile;
+      const bool allowComp = doComp && !totalTimeoutReached() &&
+                             resolveGroupTimeoutSeconds(DEFAULT_UBCSAT_TIME_LIMIT) > 0;
+      sat->localSearchProbeSaps(lsInput, allowComp);
+      myTime = gSW.TotalLap();
+      sat->localSearchProbeGsat(lsInput, allowComp && !totalTimeoutReached());
+    }
+
+    if (options.doLobjois)
+    {
+      myTime = gSW.TotalLap();
+      sat->lobjoisProbe(false, doComp && !totalTimeoutReached() &&
+                                   resolveGroupTimeoutSeconds(DEFAULT_LOBJOIS_TIME_LIMIT) > 0);
+    }
 
     sat->finish_computation();
     for (int i = 0; i < sat->getNumFeatures(); ++i)

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -33,7 +34,35 @@ void printUsage(const char *progName)
        << "  -unit      Unit propagation probe\n"
        << "  -ls        Local search probes (GSAT + SAPS)\n"
        << "  -lobjois   Lobjois probe\n"
+       << "  --timeout SECONDS            Total extraction timeout\n"
+       << "  --group-timeout SECONDS      Per-feature-group timeout override\n"
+       << "  --preprocess-timeout SECONDS Preprocessor timeout override\n"
        << "  -h, --help Show this help\n";
+}
+
+bool parseIntegerOptionValue(const string &flag,
+                             const char *valueText,
+                             int &target,
+                             const char *progName)
+{
+  if (valueText == nullptr)
+  {
+    cerr << "Missing value for " << flag << "\n";
+    printUsage(progName);
+    return false;
+  }
+
+  char *end = nullptr;
+  const long parsed = strtol(valueText, &end, 10);
+  if (end == valueText || (end != nullptr && *end != '\0'))
+  {
+    cerr << "Invalid integer value for " << flag << ": " << valueText << "\n";
+    printUsage(progName);
+    return false;
+  }
+
+  target = static_cast<int>(parsed);
+  return true;
 }
 
 ParseResult parseArgs(int argc,
@@ -56,7 +85,37 @@ ParseResult parseArgs(int argc,
       printUsage(argv[0]);
       return ParseResult::Help;
     }
-    if (lowerFlag == "-all")
+
+    const auto consumeNumericOption = [&](const string &optionName, int &target) -> bool {
+      const string withEquals = optionName + "=";
+      if (lowerFlag == optionName)
+      {
+        if (index + 1 >= argc)
+          return parseIntegerOptionValue(optionName, nullptr, target, argv[0]);
+        ++index;
+        return parseIntegerOptionValue(optionName, argv[index], target, argv[0]);
+      }
+      if (lowerFlag.rfind(withEquals, 0) == 0)
+        return parseIntegerOptionValue(optionName, flag.c_str() + withEquals.size(), target, argv[0]);
+      return true;
+    };
+
+    if (lowerFlag == "--timeout" || lowerFlag.rfind("--timeout=", 0) == 0)
+    {
+      if (!consumeNumericOption("--timeout", opts.timeoutSeconds))
+        return ParseResult::Error;
+    }
+    else if (lowerFlag == "--group-timeout" || lowerFlag.rfind("--group-timeout=", 0) == 0)
+    {
+      if (!consumeNumericOption("--group-timeout", opts.groupTimeoutSeconds))
+        return ParseResult::Error;
+    }
+    else if (lowerFlag == "--preprocess-timeout" || lowerFlag.rfind("--preprocess-timeout=", 0) == 0)
+    {
+      if (!consumeNumericOption("--preprocess-timeout", opts.preprocessTimeoutSeconds))
+        return ParseResult::Error;
+    }
+    else if (lowerFlag == "-all")
       enableAllFeatures(opts);
     else if (lowerFlag == "-base")
       opts.doBase = true;

@@ -86,6 +86,16 @@ def main():
     )
     require("nvarsOrig" in smoke_features, "all-groups direct path extraction failed")
 
+    timeout_features = extract_features(
+        cnf,
+        groups=["base", "structure", "ncnf-graphs", "ncnf-rwh"],
+        group_timeout=0,
+        build_if_missing=False,
+    )
+    require(timeout_features["variable_alpha"] == -512.0, "timed-out structure group should reserve features")
+    require(timeout_features["rwh_2_mean"] == -512.0, "timed-out rwh group should reserve features")
+    require("v_nd_p_node_mean" in timeout_features, "later timed-out groups should still emit their columns")
+
     try:
         extract_features_from_path(
             ROOT / "does-not-exist.cnf",

@@ -23,7 +23,7 @@ Recompile by running `make`, then the executable `features` will be created.
 
 To run a package-level smoke test for the extractor, use `make test` inside `SAT-features-competition2024`.
 
-To compute features, simply run `./features [-base] [-structure] [-ncnf-graphs] [-ncnf-constraints] [-ncnf-rwh] [-dia] [-ls] [-lp] [-lobjois] INFILE OUTFILE`
+To compute features, simply run `./features [--timeout SECONDS] [--group-timeout SECONDS] [--preprocess-timeout SECONDS] [-base] [-structure] [-ncnf-graphs] [-ncnf-constraints] [-ncnf-rwh] [-dia] [-ls] [-lp] [-lobjois] INFILE OUTFILE`
 Where -lp, -dia etc are the feature groups:
 
  - base: Base feature group, including pre, KLB, and clause graph
@@ -43,6 +43,11 @@ Where -lp, -dia etc are the feature groups:
   The input INFILE is a DIMACS CNF file. NOTE: currently, only raw CNF files are supported, and not compressed one (like .cnf.xz)
   The output is a CSV file containing the features for one instance.
 
+Timeout controls:
+- `--timeout`: total extraction timeout
+- `--group-timeout`: per-feature-group timeout override; timed-out groups emit reserved values and extraction continues with the next selected group
+- `--preprocess-timeout`: timeout override for the preprocessing step
+
 ## Python Interface
 An importable Python interface is available in the `satzilla_features` package. It accepts PySAT `CNF` formulas directly and
 calls the extractor through a bundled shared library using `ctypes`; it does not shell out to the CLI.
@@ -57,11 +62,16 @@ from pysat.formula import CNF
 from satzilla_features import extract_features
 
 cnf = CNF(from_clauses=[[-1, 2], [-2, 3], [1, 3]])
-features = extract_features(cnf, groups=["base", "structure", "ncnf-graphs"])
+features = extract_features(
+    cnf,
+    groups=["base", "structure", "ncnf-graphs"],
+    group_timeout=180,
+)
 print(features["variable_alpha"])
 ```
 
 You can also extract directly from a CNF file path with `extract_features_from_path(...)`.
+Both Python entry points accept `timeout=...`, `group_timeout=...`, and `preprocess_timeout=...`.
 
 When building the Python package, the C/C++ extractor is compiled into `libsatzilla_features.so` and packaged together with the
 solver binaries it needs at runtime. The direct Python interface is currently Linux-only.

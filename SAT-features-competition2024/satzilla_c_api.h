@@ -21,6 +21,8 @@ typedef struct satzilla_options_t {
   int do_lobjois;
   int do_lp;
   int timeout_seconds;
+  int group_timeout_seconds;
+  int preprocess_timeout_seconds;
   const char *solver_root;
 } satzilla_options_t;
 

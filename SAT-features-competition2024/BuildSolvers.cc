@@ -30,7 +30,7 @@ void BuildSolvers(const char *strseed, const char *outfile)
 
   // --vallst
   SolverSatelite = new BinSolver("sbva", 7, 2);
-  setSolverArgs(SolverSatelite, {"-i", nullptr, "-o", outfile, "-t", SBVA_TIMEOUT});
+  setSolverArgs(SolverSatelite, {"-i", nullptr, "-o", outfile, "-t", "30"});
 
   // -- zchaff07 for compute features
   SolverZchaff = new BinSolver("cadical2023", 3, 1);
@@ -40,13 +40,13 @@ void BuildSolvers(const char *strseed, const char *outfile)
   setSolverArgs(SolverSaps, {
                                  "-inst", nullptr, "-alg", "sparrow", "-noimprove", "0.1n", "-r", "stats", outfile,
                                  "best[mean+cv],firstlmstep[mean+median+cv+q10+q90],bestavgimpr[mean+cv],firstlmratio[mean+cv],estacl,numsolve",
-                                 "-runs", UBCSAT_NUM_RUNS, "-gtimeout", UBCSAT_TIME_LIMIT, "-solve", "-v", "sat11"});
+                                 "-runs", UBCSAT_NUM_RUNS, "-gtimeout", "5", "-solve", "-v", "sat11"});
 
   SolverGsat = new BinSolver("ubcsat2006", 16, 2);
   setSolverArgs(SolverGsat, {
                                  "-inst", nullptr, "-alg", "gsat", "-noimprove", "0.5n", "-r", "stats", outfile,
                                  "best[mean+cv],firstlmstep[mean+median+cv+q10+q90],bestavgimpr[mean+cv],firstlmratio[mean+cv],estacl,numsolve",
-                                 "-runs", UBCSAT_NUM_RUNS, "-gtimeout", UBCSAT_TIME_LIMIT, "-solve"});
+                                 "-runs", UBCSAT_NUM_RUNS, "-gtimeout", "5", "-solve"});
 }
 
 void DestroySolvers()

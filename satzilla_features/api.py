@@ -50,6 +50,8 @@ class _COptions(ctypes.Structure):
         ("do_lobjois", ctypes.c_int),
         ("do_lp", ctypes.c_int),
         ("timeout_seconds", ctypes.c_int),
+        ("group_timeout_seconds", ctypes.c_int),
+        ("preprocess_timeout_seconds", ctypes.c_int),
         ("solver_root", ctypes.c_char_p),
     ]
 
@@ -181,6 +183,8 @@ def _extract_cnf_data(cnf: object) -> tuple[Sequence[Sequence[int]], int]:
 def _build_options(
     groups: Sequence[str],
     timeout: int | None,
+    group_timeout: int | None,
+    preprocess_timeout: int | None,
     solver_root: str | Path | None,
     build_if_missing: bool,
 ) -> _COptions:
@@ -198,6 +202,8 @@ def _build_options(
             setattr(options, _GROUP_ATTRS[group], 1)
 
     options.timeout_seconds = -1 if timeout is None else int(timeout)
+    options.group_timeout_seconds = -1 if group_timeout is None else int(group_timeout)
+    options.preprocess_timeout_seconds = -1 if preprocess_timeout is None else int(preprocess_timeout)
     options.solver_root = str(resolved_solver_root).encode("utf-8")
     return options
 
@@ -226,6 +232,8 @@ def extract_features(
     *,
     groups: Iterable[str] | None = None,
     timeout: int | None = None,
+    group_timeout: int | None = None,
+    preprocess_timeout: int | None = None,
     solver_root: str | Path | None = None,
     build_if_missing: bool = True,
 ) -> Mapping[str, float]:
@@ -239,7 +247,14 @@ def extract_features(
 
     clauses, nv = _extract_cnf_data(cnf)
     normalized_groups = _normalize_groups(groups)
-    options = _build_options(normalized_groups, timeout, solver_root, build_if_missing)
+    options = _build_options(
+        normalized_groups,
+        timeout,
+        group_timeout,
+        preprocess_timeout,
+        solver_root,
+        build_if_missing,
+    )
     lib = _load_library(build_if_missing)
 
     flat_literals: list[int] = []
@@ -271,11 +286,20 @@ def extract_features_from_path(
     *,
     groups: Iterable[str] | None = None,
     timeout: int | None = None,
+    group_timeout: int | None = None,
+    preprocess_timeout: int | None = None,
     solver_root: str | Path | None = None,
     build_if_missing: bool = True,
 ) -> Mapping[str, float]:
     normalized_groups = _normalize_groups(groups)
-    options = _build_options(normalized_groups, timeout, solver_root, build_if_missing)
+    options = _build_options(
+        normalized_groups,
+        timeout,
+        group_timeout,
+        preprocess_timeout,
+        solver_root,
+        build_if_missing,
+    )
     lib = _load_library(build_if_missing)
 
     result = _CResult()

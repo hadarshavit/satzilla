@@ -19,6 +19,8 @@ struct FeatureOptions {
   bool doLobjois = false;
   bool doLP = false;
   int timeoutSeconds = -1;
+  int groupTimeoutSeconds = -1;
+  int preprocessTimeoutSeconds = -1;
   const char *solverRoot = nullptr;
 };
 

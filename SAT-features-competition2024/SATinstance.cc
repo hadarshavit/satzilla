@@ -269,6 +269,55 @@ void writeReservedMantheyGraphFeatures(SATinstance *sat, const std::string &grap
 	writeReservedSequenceStats(sat, graphPrefix + "weights_");
 }
 
+bool hasFeatureValue(const SATinstance *sat, const std::string &name)
+{
+	return sat->nameToIndex.find(name) != sat->nameToIndex.end();
+}
+
+void writeFeatureIfMissing(SATinstance *sat, const std::string &name, double value)
+{
+	if (!hasFeatureValue(sat, name))
+		sat->writeFeature(name.c_str(), value);
+}
+
+void writeReservedSequenceStatsIfMissing(SATinstance *sat, const std::string &prefix)
+{
+	static const char *kSuffixes[] = {
+		"min", "max", "mode", "mean", "std", "zeros", "entropy", "q1", "q2", "q3", "val_rate"};
+	for (size_t i = 0; i < sizeof(kSuffixes) / sizeof(kSuffixes[0]); ++i)
+		writeFeatureIfMissing(sat, prefix + kSuffixes[i], RESERVED_VALUE);
+}
+
+void writeReservedMantheyGraphFeaturesIfMissing(SATinstance *sat, const std::string &graphPrefix)
+{
+	writeReservedSequenceStatsIfMissing(sat, graphPrefix + "node_");
+	writeReservedSequenceStatsIfMissing(sat, graphPrefix + "weights_");
+}
+
+void writeReservedStructureFeaturesIfMissing(SATinstance *sat)
+{
+	writeFeatureIfMissing(sat, "vig_modularty", RESERVED_VALUE);
+	writeFeatureIfMissing(sat, "vig_d_poly", RESERVED_VALUE);
+	writeFeatureIfMissing(sat, "cvig_db_poly", RESERVED_VALUE);
+	writeFeatureIfMissing(sat, "variable_alpha", RESERVED_VALUE);
+}
+
+void writeReservedRwhFeaturesIfMissing(SATinstance *sat)
+{
+	for (int iteration = 0; iteration < 3; ++iteration)
+	{
+		char featureName[64];
+		snprintf(featureName, sizeof(featureName), "rwh_%d_mean", iteration);
+		writeFeatureIfMissing(sat, featureName, RESERVED_VALUE);
+		snprintf(featureName, sizeof(featureName), "rwh_%d_coeff", iteration);
+		writeFeatureIfMissing(sat, featureName, RESERVED_VALUE);
+		snprintf(featureName, sizeof(featureName), "rwh_%d_min", iteration);
+		writeFeatureIfMissing(sat, featureName, RESERVED_VALUE);
+		snprintf(featureName, sizeof(featureName), "rwh_%d_max", iteration);
+		writeFeatureIfMissing(sat, featureName, RESERVED_VALUE);
+	}
+}
+
 int literalNodeIndex(int literal, int numVars)
 {
 	if (literal > 0)
@@ -464,12 +513,17 @@ double mostLikelyAlpha(const std::vector<int> &x,
 	return -bestAlpha;
 }
 
-int countConnectedComponents(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+int countConnectedComponents(const std::vector<std::vector<int> > &adjacency, int nodeCount, bool *timedOut = nullptr)
 {
 	std::vector<bool> visited(nodeCount + 1, false);
 	int componentCount = 0;
 	for (int node = 1; node <= nodeCount; ++node)
 	{
+		if (timedOut != nullptr && node % 256 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			*timedOut = true;
+			return componentCount;
+		}
 		if (visited[node])
 			continue;
 		componentCount++;
@@ -493,7 +547,7 @@ int countConnectedComponents(const std::vector<std::vector<int> > &adjacency, in
 	return componentCount;
 }
 
-std::vector<int> burningByNodeDegree(const std::vector<std::vector<int> > &adjacency, int nodeCount)
+std::vector<int> burningByNodeDegree(const std::vector<std::vector<int> > &adjacency, int nodeCount, bool *timedOut)
 {
 	std::vector<int> coverCounts(nodeCount, 0);
 	if (nodeCount <= 1)
@@ -510,10 +564,17 @@ std::vector<int> burningByNodeDegree(const std::vector<std::vector<int> > &adjac
 		return lhs.first < rhs.first;
 	});
 
-	const int componentCount = countConnectedComponents(adjacency, nodeCount);
+	const int componentCount = countConnectedComponents(adjacency, nodeCount, timedOut);
+	if (timedOut != nullptr && *timedOut)
+		return coverCounts;
 	const int maxRadius = MIN(16, nodeCount - 1);
 	for (int radius = 1; radius <= maxRadius; ++radius)
 	{
+		if (timedOut != nullptr && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			*timedOut = true;
+			return coverCounts;
+		}
 		if (coverCounts[radius - 1] <= componentCount)
 			continue;
 
@@ -524,6 +585,11 @@ std::vector<int> burningByNodeDegree(const std::vector<std::vector<int> > &adjac
 			int centre = 0;
 			for (size_t i = 0; i < nodeDegrees.size(); ++i)
 			{
+				if (timedOut != nullptr && i % 256 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+				{
+					*timedOut = true;
+					return coverCounts;
+				}
 				if (!burned[nodeDegrees[i].first])
 				{
 					centre = nodeDegrees[i].first;
@@ -591,7 +657,7 @@ double modularityFromPartition(const std::vector<std::map<int, double> > &adjace
 	return modularity;
 }
 
-double approximateLouvainModularity(const std::vector<std::map<int, double> > &adjacency, int nodeCount)
+double approximateLouvainModularity(const std::vector<std::map<int, double> > &adjacency, int nodeCount, bool *timedOut)
 {
 	std::vector<double> nodeWeights(nodeCount + 1, 0.0);
 	double totalWeightTwice = 0.0;
@@ -615,9 +681,19 @@ double approximateLouvainModularity(const std::vector<std::map<int, double> > &a
 	bool changed = true;
 	while (changed)
 	{
+		if (timedOut != nullptr && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			*timedOut = true;
+			return 0.0;
+		}
 		changed = false;
 		for (int node = 1; node <= nodeCount; ++node)
 		{
+			if (timedOut != nullptr && node % 256 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+			{
+				*timedOut = true;
+				return 0.0;
+			}
 			std::map<int, double> weightsToCommunity;
 			for (std::map<int, double>::const_iterator it = adjacency[node].begin(); it != adjacency[node].end(); ++it)
 				weightsToCommunity[community[it->first]] += it->second;
@@ -1414,7 +1490,7 @@ int SATinstance::computeFeatures(bool doComp, bool doClauseGraphFeatures)
 	}
 
 	writeFeature("Basic-featuretime", gSW.TotalLap() - myTime);
-	if (gSW.TotalLap() -myTime > TOTAL_TIMEOUT)
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
 	{
 		double dummy[] = {RESERVED_VALUE, RESERVED_VALUE};
 		writeStats(dummy, 2, "VCG-VAR");
@@ -1486,7 +1562,7 @@ int SATinstance::computeFeatures(bool doComp, bool doClauseGraphFeatures)
 		horny_var_norm[t] = (double)horny_var[t] / (double)numActiveClauses;
 
 		if (t % 100 == 0){
-			if (gSW.TotalLap() - myTime > TOTAL_TIMEOUT)
+			if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
 			{
 				double dummy[] = {RESERVED_VALUE, RESERVED_VALUE};
 				writeStats(dummy, 2, "VCG-VAR");
@@ -1559,7 +1635,7 @@ int SATinstance::computeFeatures(bool doComp, bool doClauseGraphFeatures)
 	delete[] var_graph_found;
 
 	writeFeature("KLB-featuretime", gSW.TotalLap() - myTime);
-	if (gSW.TotalLap() - myTime > TOTAL_TIMEOUT) {
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT)) {
 		double dummy[] = {RESERVED_VALUE, RESERVED_VALUE};
 		writeStats(dummy, 2, "CG");
 		writeFeature("CG-entropy", RESERVED_VALUE);
@@ -1632,7 +1708,7 @@ void SATinstance::clauseGraphFeatures(bool realCC)
 			}
 			printf("NEI%f, %d\n", gSW.TotalLap(), inner_count);
 
-			if (inner_count++ % 100 == 0 && gSW.TotalLap() - myTime > TOTAL_TIMEOUT)
+			if (inner_count++ % 100 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
 			{
 				
 				for (int i = 0; i < numActiveClauses; i++)
@@ -1659,7 +1735,7 @@ void SATinstance::clauseGraphFeatures(bool realCC)
 		//    fprintf(stderr, "Clause %d coeff %lf\n", count, clusterCoeffs[count]);
 
 		//    fprintf(stderr, "Time so far: %f\n", sw.Lap());
-		if (count % 10000 == 0 && gSW.TotalLap() - myTime > TOTAL_TIMEOUT)
+		if (count % 10000 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
 		{
 			
 			for (int i = 0; i < numActiveClauses; i++)
@@ -1781,7 +1857,7 @@ int SATinstance::compute_lp(bool doComp)
 			return (lp_return_val = LP_ERROR);
 		}
 
-		if (sw.Lap() > LP_TIME_LIMIT)
+		if (groupTimeoutReached(myTime, DEFAULT_LP_TIME_LIMIT))
 		{
 			res = LP_TIMEOUT;
 			break;
@@ -1795,9 +1871,9 @@ int SATinstance::compute_lp(bool doComp)
 
 	// == print_lp(lp);
 
-	set_timeout(lp, LP_TIME_LIMIT); // in seconds
+	set_timeout(lp, resolveGroupTimeoutSeconds(DEFAULT_LP_TIME_LIMIT)); // in seconds
 
-	if (sw.Lap() > LP_TIME_LIMIT)
+	if (groupTimeoutReached(myTime, DEFAULT_LP_TIME_LIMIT))
 		res = LP_TIMEOUT;
 	else
 		res = solve(lp);
@@ -1938,7 +2014,7 @@ int SATinstance::init_diameter(bool doComp)
 	for (i = 1; i <= numVars; i++)
 	{
 		int diameter = computer_diameter(i, nrofliterals);
-		if (sw.Lap() > DIA_TIME_LIMIT)
+		if (groupTimeoutReached(myTime, DEFAULT_DIA_TIME_LIMIT))
 			break;
 		//         printf("c diameter for %d: %d \n", i,diameter);
 		if (diameter > max_diameter)
@@ -2635,10 +2711,7 @@ int SATinstance::structureFeatures(bool doComp)
 {
 	if (!doComp)
 	{
-		writeFeature("vig_modularty", RESERVED_VALUE);
-		writeFeature("vig_d_poly", RESERVED_VALUE);
-		writeFeature("cvig_db_poly", RESERVED_VALUE);
-		writeFeature("variable_alpha", RESERVED_VALUE);
+		writeReservedStructureFeaturesIfMissing(this);
 		writeFeature("structure-featuretime", RESERVED_VALUE);
 		return 0;
 	}
@@ -2648,6 +2721,20 @@ int SATinstance::structureFeatures(bool doComp)
 	std::vector<int> clauseLiteralOccurrences;
 	int translatedVarCount = 0;
 	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+	{
+		writeReservedRwhFeaturesIfMissing(this);
+		writeFeature("ncnf-rwh-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return TOTAL_TIMEOUT_CODE;
+	}
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+	{
+		writeReservedStructureFeaturesIfMissing(this);
+		writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return TOTAL_TIMEOUT_CODE;
+	}
 
 	if (translatedVarCount == 0 || clausesVec.empty())
 	{
@@ -2667,7 +2754,16 @@ int SATinstance::structureFeatures(bool doComp)
 
 	std::vector<int> occurrenceHistogram(clausesVec.size() + 1, 0);
 	for (int var = 1; var <= translatedVarCount; ++var)
+	{
 		occurrenceHistogram[variableCount[var]]++;
+		if (var % 1024 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			writeReservedStructureFeaturesIfMissing(this);
+			writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
+	}
 
 	std::vector<std::pair<int, int> > countOccurrences;
 	for (size_t count = 0; count < occurrenceHistogram.size(); ++count)
@@ -2700,6 +2796,13 @@ int SATinstance::structureFeatures(bool doComp)
 	std::vector<std::map<int, double> > vigWeighted(translatedVarCount + 1);
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			writeReservedStructureFeaturesIfMissing(this);
+			writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const std::vector<int> &clause = clausesVec[clauseIdx];
 		if (clause.size() < 2)
 			continue;
@@ -2723,6 +2826,13 @@ int SATinstance::structureFeatures(bool doComp)
 	std::vector<std::vector<int> > cvigAdj = initUndirectedAdjacency(translatedVarCount + static_cast<int>(clausesVec.size()));
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			writeReservedStructureFeaturesIfMissing(this);
+			writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const int clauseNode = translatedVarCount + static_cast<int>(clauseIdx) + 1;
 		for (size_t litIdx = 0; litIdx < clausesVec[clauseIdx].size(); ++litIdx)
 		{
@@ -2733,9 +2843,20 @@ int SATinstance::structureFeatures(bool doComp)
 	}
 	finalizeUndirectedAdjacency(cvigAdj);
 
-	writeFeature("vig_modularty", approximateLouvainModularity(vigWeighted, translatedVarCount));
-	writeFeature("vig_d_poly", fractalSlope(burningByNodeDegree(vigAdj, translatedVarCount)));
-	writeFeature("cvig_db_poly", fractalSlope(burningByNodeDegree(cvigAdj, translatedVarCount + static_cast<int>(clausesVec.size()))));
+	bool timedOut = false;
+	const double modularity = approximateLouvainModularity(vigWeighted, translatedVarCount, &timedOut);
+	const std::vector<int> vigCovers = timedOut ? std::vector<int>() : burningByNodeDegree(vigAdj, translatedVarCount, &timedOut);
+	const std::vector<int> cvigCovers = timedOut ? std::vector<int>() : burningByNodeDegree(cvigAdj, translatedVarCount + static_cast<int>(clausesVec.size()), &timedOut);
+	if (timedOut || groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+	{
+		writeReservedStructureFeaturesIfMissing(this);
+		writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return TOTAL_TIMEOUT_CODE;
+	}
+	writeFeature("vig_modularty", modularity);
+	writeFeature("vig_d_poly", fractalSlope(vigCovers));
+	writeFeature("cvig_db_poly", fractalSlope(cvigCovers));
 	writeFeature("variable_alpha", alpha);
 	writeFeature("structure-featuretime", gSW.TotalLap() - myTime);
 	myTime = gSW.TotalLap();
@@ -2767,11 +2888,27 @@ int SATinstance::newCnfGraphFeatures(bool doComp)
 	std::vector<int> clauseLiteralOccurrences;
 	int translatedVarCount = 0;
 	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+	{
+		for (size_t i = 0; i < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++i)
+			writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[i]);
+		writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return TOTAL_TIMEOUT_CODE;
+	}
 
 	std::vector<double> vPos(translatedVarCount, 0.0), vNeg(translatedVarCount, 0.0);
 	std::vector<double> cPos(clausesVec.size(), 0.0), cNeg(clausesVec.size(), 0.0);
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t i = 0; i < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++i)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[i]);
+			writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		for (size_t litIdx = 0; litIdx < clausesVec[clauseIdx].size(); ++litIdx)
 		{
 			const int literal = clausesVec[clauseIdx][litIdx];
@@ -2797,6 +2934,14 @@ int SATinstance::newCnfGraphFeatures(bool doComp)
 	std::map<EdgeKey, double> vgWeights;
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 256 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t i = 0; i < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++i)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[i]);
+			writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const std::vector<int> &clause = clausesVec[clauseIdx];
 		for (size_t i = 0; i < clause.size(); ++i)
 		{
@@ -2819,6 +2964,14 @@ int SATinstance::newCnfGraphFeatures(bool doComp)
 	std::map<EdgeKey, double> cgWeights;
 	for (size_t i = 0; i < clausesVec.size(); ++i)
 	{
+		if (i % 64 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t prefix = 0; prefix < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++prefix)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[prefix]);
+			writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const std::set<int> clauseLits(clausesVec[i].begin(), clausesVec[i].end());
 		for (size_t j = i + 1; j < clausesVec.size(); ++j)
 		{
@@ -2841,6 +2994,14 @@ int SATinstance::newCnfGraphFeatures(bool doComp)
 	std::map<EdgeKey, double> rgWeights;
 	for (size_t i = 0; i < clausesVec.size(); ++i)
 	{
+		if (i % 64 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t prefix = 0; prefix < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++prefix)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[prefix]);
+			writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const std::set<int> clauseA(clausesVec[i].begin(), clausesVec[i].end());
 		for (size_t j = i + 1; j < clausesVec.size(); ++j)
 		{
@@ -2901,6 +3062,14 @@ int SATinstance::newCnfGraphFeatures(bool doComp)
 	std::map<DirectedEdgeKey, double> bigWeights;
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t i = 0; i < sizeof(kGraphPrefixes) / sizeof(kGraphPrefixes[0]); ++i)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kGraphPrefixes[i]);
+			writeFeature("ncnf-graphs-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		if (clausesVec[clauseIdx].size() != 2)
 			continue;
 		const int a = clausesVec[clauseIdx][0];
@@ -2940,11 +3109,27 @@ int SATinstance::newCnfConstraintFeatures(bool doComp)
 	std::vector<int> clauseLiteralOccurrences;
 	int translatedVarCount = 0;
 	buildTranslatedActiveClauses(clausesVec, translatedVarCount, literalOccurrences, clauseLiteralOccurrences);
+	if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+	{
+		for (size_t i = 0; i < sizeof(kConstraintPrefixes) / sizeof(kConstraintPrefixes[0]); ++i)
+			writeReservedMantheyGraphFeaturesIfMissing(this, kConstraintPrefixes[i]);
+		writeFeature("ncnf-constraints-featuretime", gSW.TotalLap() - myTime);
+		myTime = gSW.TotalLap();
+		return TOTAL_TIMEOUT_CODE;
+	}
 
 	const int literalNodeCount = 2 * translatedVarCount;
 	std::vector<std::vector<int> > bigAdj(literalNodeCount + 1);
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t i = 0; i < sizeof(kConstraintPrefixes) / sizeof(kConstraintPrefixes[0]); ++i)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kConstraintPrefixes[i]);
+			writeFeature("ncnf-constraints-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		if (clausesVec[clauseIdx].size() != 2)
 			continue;
 		const int a = clausesVec[clauseIdx][0];
@@ -2972,6 +3157,14 @@ int SATinstance::newCnfConstraintFeatures(bool doComp)
 
 	for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 	{
+		if (clauseIdx % 256 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			for (size_t i = 0; i < sizeof(kConstraintPrefixes) / sizeof(kConstraintPrefixes[0]); ++i)
+				writeReservedMantheyGraphFeaturesIfMissing(this, kConstraintPrefixes[i]);
+			writeFeature("ncnf-constraints-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		const std::vector<int> &clause = clausesVec[clauseIdx];
 		if (clause.size() <= 2)
 			continue;
@@ -3094,8 +3287,22 @@ int SATinstance::newCnfRwhFeatures(bool doComp)
 
 	for (int iteration = 0; iteration < 3; ++iteration)
 	{
+		if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			writeReservedRwhFeaturesIfMissing(this);
+			writeFeature("ncnf-rwh-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		for (size_t clauseIdx = 0; clauseIdx < clausesVec.size(); ++clauseIdx)
 		{
+			if (clauseIdx % 512 == 0 && groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+			{
+				writeReservedRwhFeaturesIfMissing(this);
+				writeFeature("ncnf-rwh-featuretime", gSW.TotalLap() - myTime);
+				myTime = gSW.TotalLap();
+				return TOTAL_TIMEOUT_CODE;
+			}
 			const std::vector<int> &clause = clausesVec[clauseIdx];
 			const int clauseLength = static_cast<int>(clause.size());
 			if (clauseLength <= 1)
@@ -3322,6 +3529,24 @@ int SATinstance::unitPropProbe(bool haltOnAssignment, bool doComp)
 
 	for (int probeNum = 0; probeNum < NUM_PROBES; probeNum++)
 	{
+		if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			int skippedProbeDepth = 1;
+			for (int j = 0; j < probeNum; j++)
+				skippedProbeDepth *= 4;
+			for (int remainingProbe = probeNum; remainingProbe < NUM_PROBES; ++remainingProbe)
+			{
+				char featNameStr[100];
+				sprintf(featNameStr, "vars-reduced-depth-%d", skippedProbeDepth);
+				writeFeature(featNameStr, RESERVED_VALUE);
+				skippedProbeDepth *= 4;
+			}
+			while (numActiveVars != origNumActiveVars)
+				backtrack();
+			writeFeature("unit-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		// this sets depth to 1, 4, 16, 64, 256
 		int nextProbeDepth = 1;
 		for (int j = 0; j < probeNum; j++)
@@ -3329,6 +3554,8 @@ int SATinstance::unitPropProbe(bool haltOnAssignment, bool doComp)
 
 		while (currentDepth < nextProbeDepth && !reachedBottom)
 		{
+			if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+				break;
 			int varsInMostBinClauses[NUM_VARS_TO_TRY];
 			int numBin[NUM_VARS_TO_TRY];
 
@@ -3416,6 +3643,23 @@ int SATinstance::unitPropProbe(bool haltOnAssignment, bool doComp)
 			currentDepth++;
 		}
 
+		if (groupTimeoutReached(myTime, DEFAULT_GROUP_TIME_LIMIT))
+		{
+			int skippedProbeDepth = nextProbeDepth;
+			for (int remainingProbe = probeNum; remainingProbe < NUM_PROBES; ++remainingProbe)
+			{
+				char featNameStr[100];
+				sprintf(featNameStr, "vars-reduced-depth-%d", skippedProbeDepth);
+				writeFeature(featNameStr, RESERVED_VALUE);
+				skippedProbeDepth *= 4;
+			}
+			while (numActiveVars != origNumActiveVars)
+				backtrack();
+			writeFeature("unit-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			return TOTAL_TIMEOUT_CODE;
+		}
+
 		char featNameStr[100];
 		sprintf(featNameStr, "vars-reduced-depth-%d", nextProbeDepth);
 		writeFeature(featNameStr, (double)(origNumActiveVars - numActiveVars - currentDepth) / numVars);
@@ -3431,7 +3675,7 @@ int SATinstance::unitPropProbe(bool haltOnAssignment, bool doComp)
 int SATinstance::sp(bool doComp)
 {
 	if (DEB)
-		printf("c do survay propogation for %d second ...\n", SP_TIME_LIMIT);
+		printf("c do survay propogation for %d second ...\n", resolveGroupTimeoutSeconds(DEFAULT_SP_TIME_LIMIT));
 
 	if (!doComp)
 	{
@@ -3446,7 +3690,7 @@ int SATinstance::sp(bool doComp)
 	double **spresult;
 	double *uncondfoo, *ratiofoo;
 	int spsize;
-	spresult = varsat::main(const_cast<char *>(inputFileName), spsize, SP_TIME_LIMIT);
+	spresult = varsat::main(const_cast<char *>(inputFileName), spsize, resolveGroupTimeoutSeconds(DEFAULT_SP_TIME_LIMIT));
 	uncondfoo = new double[spsize];
 	ratiofoo = new double[spsize];
 	for (int i = 0; i < spsize; i++)
@@ -3511,6 +3755,30 @@ void writeReservedLocalSearchFeatures(SATinstance *sat, const char *prefix, cons
 	sat->writeFeature(timeFeature, RESERVED_VALUE);
 }
 
+void writeReservedLocalSearchStats(SATinstance *sat, const char *prefix)
+{
+	static const char *kFeatureSuffixes[] = {
+		"BestSolution_Mean",
+		"BestSolution_CoeffVariance",
+		"FirstLocalMinStep_Mean",
+		"FirstLocalMinStep_CoeffVariance",
+		"FirstLocalMinStep_Median",
+		"FirstLocalMinStep_Q.10",
+		"FirstLocalMinStep_Q.90",
+		"BestAvgImprovement_Mean",
+		"BestAvgImprovement_CoeffVariance",
+		"FirstLocalMinRatio_Mean",
+		"FirstLocalMinRatio_CoeffVariance",
+	};
+
+	char featureName[128];
+	for (const char *suffix : kFeatureSuffixes)
+	{
+		snprintf(featureName, sizeof(featureName), "%s_%s", prefix, suffix);
+		sat->writeFeature(featureName, RESERVED_VALUE);
+	}
+}
+
 bool parseLocalSearchOutput(SATinstance *sat, const char *outputFile, const char *prefix, int solvedCode)
 {
 	ifstream infile(outputFile);
@@ -3569,11 +3837,23 @@ int runLocalSearchProbe(SATinstance *sat,
 		return 0;
 	}
 
+	const std::string timeoutText = std::to_string(resolveGroupTimeoutSeconds(DEFAULT_UBCSAT_TIME_LIMIT));
 	solver->argv[9] = outputFile;
-	solver->execute(inputFile, UBCSAT_TIME_LIMIT_INT);
+	if (solver->argc > 14)
+		solver->argv[14] = timeoutText.c_str();
+	const int executeStatus = solver->execute(inputFile, resolveGroupTimeoutSeconds(DEFAULT_UBCSAT_TIME_LIMIT));
 
 	if (!parseLocalSearchOutput(sat, outputFile, prefix, solvedCode))
 	{
+		if (executeStatus != 0)
+		{
+			writeReservedLocalSearchStats(sat, prefix);
+			sat->writeFeature(timeFeature, gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			remove(outputFile);
+			solver->cleanup();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		fprintf(stderr, "c Error: could not read from outputfile %s.\n", outputFile);
 		solver->cleanup();
 		throw std::runtime_error(std::string("Could not read local-search output file ") + outputFile);
@@ -3626,7 +3906,7 @@ int SATinstance::lobjoisProbe(bool haltOnAssignment, bool doComp)
 
 	int probeNum = 0;
 
-	while (probeNum < NUM_LOB_PROBE && sw.Lap() < LOBJOIS_TIME_LIMIT)
+	while (probeNum < NUM_LOB_PROBE && !groupTimeoutReached(myTime, DEFAULT_LOBJOIS_TIME_LIMIT))
 	{
 
 		int var;
@@ -3722,7 +4002,7 @@ int SATinstance::cl_prob(const char *outfile, bool doComp)
 	int mysize = 0;
 	if (DEB)
 		printf("c start clause learning features ...\n");
-	returnVal = SolverZchaff->execute(outfile, CL_TIME_LIMIT);
+	returnVal = SolverZchaff->execute(outfile, resolveGroupTimeoutSeconds(DEFAULT_CL_TIME_LIMIT));
 	if (returnVal == 10 || returnVal == 20)
 	{
 		if (DEB)
@@ -3739,6 +4019,18 @@ int SATinstance::cl_prob(const char *outfile, bool doComp)
 	ifstream fin(SolverZchaff->outFileName);
 	if (!fin)
 	{
+		if (returnVal != 0)
+		{
+			double dummy[] = {RESERVED_VALUE, RESERVED_VALUE};
+			writeStats(dummy, 2, "cl-num");
+			writeStatsQ(dummy, 2, "cl-num");
+			writeStats(dummy, 2, "cl-size");
+			writeStatsQ(dummy, 2, "cl-size");
+			writeFeature("cl-featuretime", gSW.TotalLap() - myTime);
+			myTime = gSW.TotalLap();
+			SolverZchaff->cleanup();
+			return TOTAL_TIMEOUT_CODE;
+		}
 		fprintf(stderr, "c Error: could not read from %s.\n", outfile);
 		throw std::runtime_error(std::string("Could not read clause-learning output from ") + outfile);
 	}
