@@ -1,0 +1,16 @@
+include README.md
+include pyproject.toml
+include setup.py
+
+graft satzilla_features
+graft src
+
+# Exclude local build outputs and caches from source distributions.
+prune src/obj
+prune src/lp_solve_5.0/bin
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.o
+global-exclude *.so
+global-exclude *.a
+exclude src/features
